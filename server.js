@@ -7,7 +7,6 @@ app.use(cors());
 app.use(express.json());
 
 async function submitToBabaAlgeria(order) {
-    // إعدادات المتصفح الخفيفة جداً لتناسب خوادم Render
     const browser = await puppeteer.launch({
         headless: "new",
         args: [
@@ -22,7 +21,7 @@ async function submitToBabaAlgeria(order) {
     const page = await browser.newPage();
 
     try {
-        console.log("🚀 جاري بدء الأتمتة للطلبية:", order.customerName);
+        console.log("🚀 جاري بدء الأتمتة في الخلفية للطلبية:", order.customerName);
 
         // 1. تسجيل الدخول
         await page.goto('https://babaalgeria.com/login', { waitUntil: 'networkidle2' });
@@ -74,35 +73,31 @@ async function submitToBabaAlgeria(order) {
             if(deskBtn) await deskBtn.click();
         }
 
-        // 7. النقر الحقيقي على زر "إرسال الطلبية"
+        // 7. النقر على زر "إرسال الطلبية"
         const [submitBtn] = await page.$x("//button[contains(text(), 'إرسال الطلبية')]");
         if(submitBtn) {
-            await submitBtn.click(); // الآن سيتم إرسال الطلبية فعلياً!
-            console.log("✅ اكتملت تعبئة البيانات وتم إرسال الطلبية!");
+            await submitBtn.click();
+            console.log("✅ تم إرسال الطلبية بنجاح إلى بابا الجزائر!");
         }
 
-        // انتظار 3 ثوانٍ لضمان تسجيل بابا الجزائر للطلبية قبل إغلاق المتصفح
         await new Promise(r => setTimeout(r, 3000));
-
-        return { success: true, message: "Order processed successfully" };
 
     } catch (error) {
         console.error("❌ حدث خطأ أثناء الأتمتة:", error);
-        return { success: false, error: error.message };
     } finally {
         await browser.close();
     }
 }
 
-app.post('/api/order', async (req, res) => {
+// استقبال البيانات والرد الفوري لتجنب انتهاء المهلة (Timeout)
+app.post('/api/order', (req, res) => {
     const orderData = req.body;
-    const result = await submitToBabaAlgeria(orderData);
     
-    if(result.success) {
-        res.status(200).json(result);
-    } else {
-        res.status(500).json(result);
-    }
+    // الرد الفوري على موقع Vercel بأن الطلبية وصلت بنجاح لتظهر للزبون فوراً
+    res.status(200).json({ success: true, message: "Order received" });
+
+    // تشغيل البوت في الخلفية بصمت تام لكي لا ينتظر الموقع
+    submitToBabaAlgeria(orderData);
 });
 
 const PORT = process.env.PORT || 3000;
