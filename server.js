@@ -76,7 +76,7 @@ async function submitToBabaAlgeria(order) {
         // 7. النقر على زر "إرسال الطلبية"
         const [submitBtn] = await page.$x("//button[contains(text(), 'إرسال الطلبية')]");
         if(submitBtn) {
-            // await submitBtn.click(); // قمنا بتعطيلها مؤقتاً للتجربة فقط حتى لا نرسل طلبيات وهمية
+             await submitBtn.click(); // قمنا بتعطيلها مؤقتاً للتجربة فقط حتى لا نرسل طلبيات وهمية
             console.log("✅ اكتملت تعبئة البيانات وجاهزة للإرسال!");
         }
 
