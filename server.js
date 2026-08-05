@@ -1,25 +1,111 @@
 const express = require('express');
 const cors = require('cors');
+const puppeteer = require('puppeteer');
 
 const app = express();
-app.use(cors()); 
+app.use(cors());
 app.use(express.json());
 
-// استقبال البيانات من موقعك (Vercel)
-app.post('/api/order', (req, res) => {
+async function submitToBabaAlgeria(order) {
+    // إعدادات المتصفح الخفيفة جداً لتناسب خوادم Render
+    const browser = await puppeteer.launch({
+        headless: "new",
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--single-process'
+        ]
+    });
+    
+    const page = await browser.newPage();
+
+    try {
+        console.log("🚀 جاري بدء الأتمتة للطلبية:", order.customerName);
+
+        // 1. تسجيل الدخول
+        await page.goto('https://babaalgeria.com/login', { waitUntil: 'networkidle2' });
+        
+        await page.type('input[type="email"]', process.env.BABA_EMAIL);
+        await page.type('input[type="password"]', process.env.BABA_PASSWORD);
+        await page.click('button[type="submit"]');
+        await page.waitForNavigation({ waitUntil: 'networkidle2' });
+        console.log("✅ تم تسجيل الدخول بنجاح");
+
+        // 2. التوجه لصفحة إنشاء طلبية
+        await page.goto('https://babaalgeria.com/create-order', { waitUntil: 'networkidle2' });
+
+        // 3. إدخال كود المنتج والسعر
+        const productInputs = await page.$$('input[type="text"]');
+        if(productInputs.length >= 2) {
+            await productInputs[0].type(order.babaId); 
+            await productInputs[1].click({ clickCount: 3 }); 
+            await productInputs[1].type(order.sellingPrice.toString()); 
+        }
+
+        // 4. إدخال بيانات الزبون
+        const nameParts = order.customerName.split(' ');
+        const firstName = nameParts[0];
+        const lastName = nameParts.slice(1).join(' ') || '.'; 
+        
+        const [firstNameEl] = await page.$x("//label[contains(text(), 'الاسم')]/following-sibling::input");
+        if(firstNameEl) await firstNameEl.type(firstName);
+
+        const [lastNameEl] = await page.$x("//label[contains(text(), 'اللقب')]/following-sibling::input");
+        if(lastNameEl) await lastNameEl.type(lastName);
+
+        const [phoneEl] = await page.$x("//label[contains(text(), 'الهاتف')]/following-sibling::input");
+        if(phoneEl) await phoneEl.type(order.phone);
+
+        const [addressEl] = await page.$x("//label[contains(text(), 'العنوان')]/following-sibling::input");
+        if(addressEl) await addressEl.type(order.address);
+
+        // 5. اختيار الولاية
+        const [wilayaSelect] = await page.$x("//label[contains(text(), 'ولاية التوصيل')]/following-sibling::select");
+        if(wilayaSelect) await wilayaSelect.select(order.wilaya);
+
+        // 6. اختيار نوع التوصيل
+        if (order.deliveryLocation === 'home') {
+            const [homeBtn] = await page.$x("//button[contains(text(), 'للمنزل')]");
+            if(homeBtn) await homeBtn.click();
+        } else {
+            const [deskBtn] = await page.$x("//button[contains(text(), 'للمكتب')]");
+            if(deskBtn) await deskBtn.click();
+        }
+
+        // 7. النقر الحقيقي على زر "إرسال الطلبية"
+        const [submitBtn] = await page.$x("//button[contains(text(), 'إرسال الطلبية')]");
+        if(submitBtn) {
+            await submitBtn.click(); // الآن سيتم إرسال الطلبية فعلياً!
+            console.log("✅ اكتملت تعبئة البيانات وتم إرسال الطلبية!");
+        }
+
+        // انتظار 3 ثوانٍ لضمان تسجيل بابا الجزائر للطلبية قبل إغلاق المتصفح
+        await new Promise(r => setTimeout(r, 3000));
+
+        return { success: true, message: "Order processed successfully" };
+
+    } catch (error) {
+        console.error("❌ حدث خطأ أثناء الأتمتة:", error);
+        return { success: false, error: error.message };
+    } finally {
+        await browser.close();
+    }
+}
+
+app.post('/api/order', async (req, res) => {
     const orderData = req.body;
+    const result = await submitToBabaAlgeria(orderData);
     
-    console.log("✅ نجاح! تم استلام طلبية جديدة من موقعك:");
-    console.log("الاسم:", orderData.customerName);
-    console.log("الهاتف:", orderData.phone);
-    console.log("السعر الإجمالي:", orderData.totalPrice);
-    
-    // إرسال رد فوري لموقعك بنجاح العملية
-    res.status(200).json({ success: true, message: "تم الاستلام بنجاح" });
+    if(result.success) {
+        res.status(200).json(result);
+    } else {
+        res.status(500).json(result);
+    }
 });
 
-// تشغيل الخادم
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🤖 خادم Prix Choc يعمل على المنفذ ${PORT} وجاهز لاستقبال الطلبات...`);
+    console.log(`🤖 خادم Prix Choc يعمل على المنفذ ${PORT}`);
 });
