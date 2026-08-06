@@ -19,8 +19,6 @@ async function submitToBabaAlgeria(order) {
     });
     
     const page = await browser.newPage();
-    
-    // إعطاء البوت هوية حقيقية (لتجاوز أي حماية أو جدار ناري)
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1280, height: 800 });
 
@@ -37,8 +35,7 @@ async function submitToBabaAlgeria(order) {
         await page.type('input[type="password"]', process.env.BABA_PASSWORD);
         await page.click('button[type="submit"]');
         
-        console.log("⏳ ننتظر 5 ثواني لضمان الدخول السلس (بدون انتظار إعادة التحميل)...");
-        // هذا هو الحل السحري الذي سيمنع خطأ Timeout!
+        console.log("⏳ ننتظر 5 ثواني لضمان الدخول السلس...");
         await new Promise(r => setTimeout(r, 5000)); 
 
         // 2. التوجه لصفحة إنشاء طلبية
@@ -61,7 +58,6 @@ async function submitToBabaAlgeria(order) {
         const firstName = nameParts[0];
         const lastName = nameParts.slice(1).join(' ') || '.'; 
         
-        // دالة مصغرة لتفادي الأخطاء إذا تغير تصميم الموقع قليلاً
         const typeInput = async (label, text) => {
             try {
                 const [el] = await page.$x(`//label[contains(text(), '${label}')]/following-sibling::input`);
@@ -72,7 +68,10 @@ async function submitToBabaAlgeria(order) {
         await typeInput('الاسم', firstName);
         await typeInput('اللقب', lastName);
         await typeInput('الهاتف', order.phone);
-        await typeInput('العنوان', order.address);
+
+        // دمج البلدية مع العنوان هنا!
+        const finalAddress = (order.commune ? order.commune + " - " : "") + order.address;
+        await typeInput('العنوان', finalAddress);
 
         // 5. اختيار الولاية
         console.log("🗺️ جاري تحديد الولاية...");
@@ -92,15 +91,17 @@ async function submitToBabaAlgeria(order) {
             }
         } catch(e) {}
 
-        // 7. النقر على زر "إرسال الطلبية"
+        // 7. النقر على زر "إرسال الطلبية" الأخير
         console.log("🎯 جاري الضغط على زر التأكيد النهائي...");
-        const [submitBtn] = await page.$x("//button[contains(text(), 'إرسال الطلبية')]");
-        if(submitBtn) {
-            await submitBtn.click();
-            console.log("🎉 نجاح! تم تسجيل الطلبية رسمياً في بابا الجزائر.");
-        } else {
-            console.log("⚠️ تحذير: لم يتم العثور على زر الإرسال.");
-        }
+        await page.evaluate(() => {
+            // نبحث عن أي زر إرسال (Submit) أو زر يحتوي على كلمة إرسال في الموقع بالكامل ونضغط عليه بالقوة
+            const buttons = Array.from(document.querySelectorAll('button'));
+            const submitBtn = buttons.find(b => b.type === 'submit' || b.innerText.includes('إرسال الطلبية'));
+            if(submitBtn) {
+                submitBtn.click();
+            }
+        });
+        console.log("🎉 نجاح! تم تسجيل الطلبية رسمياً في بابا الجزائر.");
 
         await new Promise(r => setTimeout(r, 4000));
 
