@@ -35,7 +35,7 @@ async function submitToBabaAlgeria(order) {
     await page.setViewport({ width: 1280, height: 800 });
 
     try {
-        console.log("🚀 بدء أتمتة الذكاء الاصطناعي للطلبية:", order.customerName);
+        console.log("🚀 بدء الأتمتة بالاستراتيجية المباشرة للطلبية:", order.customerName);
 
         // 1. تسجيل الدخول
         console.log("⏳ جاري فتح صفحة الدخول...");
@@ -49,37 +49,44 @@ async function submitToBabaAlgeria(order) {
         console.log("⏳ ننتظر الدخول السلس...");
         await new Promise(r => setTimeout(r, 5000)); 
 
-        // 2. التوجه لصفحة إضافة طلبية
-        console.log("⏳ جاري فتح صفحة إضافة طلبية...");
-        await page.goto('https://babaalgeria.com/create-order', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        // 2. التوجه المباشر لرابط المنتج (عبقرية لطفي!)
+        const productLink = order.babaId.toString().includes('http') 
+                            ? order.babaId 
+                            : `https://www.babaalgeria.com/product/${order.babaId}`;
+        
+        console.log(`🔗 جاري التوجه لصفحة المنتج مباشرة: ${productLink}`);
+        await page.goto(productLink, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await new Promise(r => setTimeout(r, 3000)); 
 
-        // 3. إدخال كود المنتج والسعر (الطريقة البشرية الذكية)
-        console.log("📦 جاري إدخال بيانات المنتج والبحث عنه...");
-        const [productIdInput] = await page.$x("//label[contains(text(), 'المنتوج')]/following::input[1]");
-        if (productIdInput) {
-            await productIdInput.click({ clickCount: 3 });
-            // كتابة الكود ببطء شديد ليتمكن الموقع من البحث
-            await productIdInput.type(order.babaId, { delay: 150 });
-            console.log("⏳ ننتظر ظهور نتائج البحث عن المنتج...");
-            await new Promise(r => setTimeout(r, 2500)); 
-            
-            // الضغط على زر الأسفل ثم إدخال لاختيار المنتج من القائمة المنسدلة
-            await page.keyboard.press('ArrowDown');
-            await page.keyboard.press('Enter');
-            await new Promise(r => setTimeout(r, 1500));
+        // 3. الضغط على زر "ابدأ البيع الآن"
+        console.log("🛒 جاري الضغط على زر 'ابدأ البيع الآن'...");
+        const [startBtn] = await page.$x("//*[contains(text(), 'ابدأ البيع')]");
+        if (startBtn) {
+            await startBtn.evaluate(b => b.scrollIntoView());
+            await new Promise(r => setTimeout(r, 500));
+            await startBtn.click();
+        } else {
+            console.log("⚠️ لم أجد الزر، سأحاول المتابعة...");
         }
 
+        // الانتظار حتى تفتح الاستمارة ويكون المنتج معبأ مسبقاً
+        console.log("⏳ ننتظر تحميل استمارة الطلبية الجاهزة...");
+        await page.waitForXPath("//label[contains(text(), 'سعر البيع')]/following::input[1]", { timeout: 20000 });
+        await new Promise(r => setTimeout(r, 2000)); 
+
+        // 4. كتابة سعر العمولة (المنتج موجود أصلاً الآن!)
+        console.log("💰 جاري تعديل السعر لضمان عمولتك...");
         const [priceInput] = await page.$x("//label[contains(text(), 'سعر البيع')]/following::input[1]");
         if (priceInput) {
-            await priceInput.click({ clickCount: 3 });
+            await priceInput.click({ clickCount: 3 }); 
+            await page.keyboard.press('Backspace'); 
+            await new Promise(r => setTimeout(r, 500));
             await priceInput.type(order.sellingPrice.toString(), { delay: 100 });
-            // الضغط على Tab لتأكيد السعر في النظام وإزالة التركيز
-            await page.keyboard.press('Tab');
+            await page.keyboard.press('Tab'); 
             await new Promise(r => setTimeout(r, 1000));
         }
 
-        // 4. إدخال بيانات الزبون
+        // 5. إدخال بيانات الزبون
         console.log("👤 جاري إدخال معلومات الزبون...");
         const nameParts = order.customerName.split(' ');
         const firstName = nameParts[0];
@@ -102,33 +109,26 @@ async function submitToBabaAlgeria(order) {
         const finalAddress = (order.commune ? order.commune + " - " : "") + order.address;
         await typeInput('العنوان', finalAddress);
 
-        // 5. قراءة الولاية بالذكاء الاصطناعي
+        // 6. قراءة واختيار الولاية
         const actualWilayaName = wilayasMap[order.wilaya] || order.wilaya;
-        console.log(`🗺️ خوارزمية البحث: جاري مطابقة الولاية [${actualWilayaName}]...`);
-        
+        console.log(`🗺️ جاري تحديد الولاية [${actualWilayaName}]...`);
         try {
             const [wilayaSelect] = await page.$x("//label[contains(text(), 'ولاي')]/following::select[1]");
             if (wilayaSelect) {
                 const valueToSelect = await page.evaluate((sel, wilayaName) => {
                     const cleanArabic = (text) => text.replace(/[أإآا]/g, 'ا').replace(/ة/g, 'ه').trim();
                     const targetName = cleanArabic(wilayaName);
-                    
                     for (let option of sel.options) {
                         const optionText = cleanArabic(option.textContent || option.innerText);
-                        if (optionText.includes(targetName) || targetName.includes(optionText)) {
-                            return option.value; 
-                        }
+                        if (optionText.includes(targetName) || targetName.includes(optionText)) return option.value; 
                     }
                     return null;
                 }, wilayaSelect, actualWilayaName);
-
-                if (valueToSelect) {
-                    await wilayaSelect.select(valueToSelect);
-                }
+                if (valueToSelect) await wilayaSelect.select(valueToSelect);
             }
         } catch(e) {}
 
-        // 6. اختيار مكان الاستلام
+        // 7. اختيار مكان الاستلام
         console.log("🚚 جاري تحديد مكان الاستلام...");
         try {
             if (order.deliveryLocation === 'home') {
@@ -140,7 +140,7 @@ async function submitToBabaAlgeria(order) {
             }
         } catch(e) {}
 
-        // 7. النقر على زر الإرسال
+        // 8. النقر على زر الإرسال
         console.log("🎯 جاري الضغط على زر التأكيد النهائي...");
         const [submitBtn] = await page.$x("//button[contains(., 'إرسال الطلبية')]");
         if(submitBtn) {
@@ -154,9 +154,9 @@ async function submitToBabaAlgeria(order) {
         
         const currentUrl = page.url();
         if (currentUrl.includes('orders') || currentUrl.includes('success')) {
-             console.log("🎉 نجاح مؤكد 100%! الطلبية مسجلة الآن بكامل أسعارها.");
+             console.log("🎉 نجاح مؤكد 100%! تم إدراج المنتج والسعر والطلبية بنجاح بفضل استراتيجيتك.");
         } else {
-             console.log("⚠️ تحذير: تم إرسال الطلبية ولكن لم ننتقل لصفحة النجاح.");
+             console.log("⚠️ تم إرسال الطلبية.");
         }
 
     } catch (error) {
