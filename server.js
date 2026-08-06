@@ -29,25 +29,27 @@ async function submitToBabaAlgeria(order) {
         console.log("⏳ جاري فتح صفحة الدخول...");
         await page.goto('https://babaalgeria.com/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
         
-        console.log("⌨️ جاري كتابة بيانات الدخول...");
         await page.waitForSelector('input[type="email"]', { timeout: 15000 });
         await page.type('input[type="email"]', process.env.BABA_EMAIL);
         await page.type('input[type="password"]', process.env.BABA_PASSWORD);
         await page.click('button[type="submit"]');
         
-        console.log("⏳ ننتظر 5 ثواني لضمان الدخول السلس...");
+        console.log("⏳ ننتظر الدخول...");
         await new Promise(r => setTimeout(r, 5000)); 
 
         // 2. التوجه لصفحة إنشاء طلبية
         console.log("⏳ جاري فتح صفحة إضافة طلبية...");
         await page.goto('https://babaalgeria.com/create-order', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await new Promise(r => setTimeout(r, 2000)); 
 
         // 3. إدخال كود المنتج والسعر
         console.log("📦 جاري إدخال بيانات المنتج...");
-        await page.waitForSelector('input[type="text"]', { timeout: 15000 });
         const productInputs = await page.$$('input[type="text"]');
         if(productInputs.length >= 2) {
-            await productInputs[0].type(order.babaId); 
+            await productInputs[0].type(order.babaId, { delay: 50 }); 
+            await page.keyboard.press('Enter'); 
+            await new Promise(r => setTimeout(r, 1500)); 
+            
             await productInputs[1].click({ clickCount: 3 }); 
             await productInputs[1].type(order.sellingPrice.toString()); 
         }
@@ -62,25 +64,47 @@ async function submitToBabaAlgeria(order) {
             try {
                 const [el] = await page.$x(`//label[contains(text(), '${label}')]/following-sibling::input`);
                 if(el) await el.type(text);
-            } catch(e) {}
+            } catch(e) { console.log(`⚠️ لم يتم العثور على حقل: ${label}`); }
         };
 
         await typeInput('الاسم', firstName);
         await typeInput('اللقب', lastName);
         await typeInput('الهاتف', order.phone);
 
-        // دمج البلدية مع العنوان هنا!
         const finalAddress = (order.commune ? order.commune + " - " : "") + order.address;
         await typeInput('العنوان', finalAddress);
 
-        // 5. اختيار الولاية
-        console.log("🗺️ جاري تحديد الولاية...");
+        // 5. الاختيار الذكي للولاية بقراءة النص العربي (كما طلبت تماماً)
+        console.log(`🗺️ جاري قراءة القائمة للبحث عن الولاية: ${order.wilaya}...`);
         try {
             const [wilayaSelect] = await page.$x("//label[contains(text(), 'ولاية التوصيل')]/following-sibling::select");
-            if(wilayaSelect) await wilayaSelect.select(order.wilaya);
-        } catch(e) {}
+            if (wilayaSelect) {
+                const valueToSelect = await page.evaluate((sel, wilayaName) => {
+                    // دالة ذكية لتنظيف النص العربي لتفادي أخطاء الحروف المتشابهة
+                    const cleanArabic = (text) => text.replace(/[أإآا]/g, 'ا').replace(/ة/g, 'ه').trim();
+                    const targetName = cleanArabic(wilayaName);
+                    
+                    // البحث في كل خيارات بابا الجزائر ومطابقتها مع ولاية الزبون
+                    for (let option of sel.options) {
+                        const optionText = cleanArabic(option.text);
+                        if (optionText.includes(targetName) || targetName.includes(optionText)) {
+                            return option.value; // جلب الكود السري للولاية
+                        }
+                    }
+                    return null;
+                }, wilayaSelect, order.wilaya);
 
-        // 6. اختيار نوع التوصيل
+                if (valueToSelect) {
+                    await wilayaSelect.select(valueToSelect); // تفعيل الولاية رسمياً في الموقع
+                    console.log(`✅ تم إيجاد الولاية بنجاح واختيارها!`);
+                } else {
+                    console.log(`⚠️ لم يتطابق اسم الولاية: ${order.wilaya}`);
+                }
+            }
+        } catch(e) { console.log("⚠️ خطأ في قراءة قائمة الولايات"); }
+
+        // 6. اختيار مكان الاستلام
+        console.log("🚚 جاري تحديد مكان الاستلام...");
         try {
             if (order.deliveryLocation === 'home') {
                 const [homeBtn] = await page.$x("//button[contains(text(), 'للمنزل')]");
@@ -91,25 +115,32 @@ async function submitToBabaAlgeria(order) {
             }
         } catch(e) {}
 
-        // 7. النقر على زر "إرسال الطلبية" الأخير
+        // 7. النقر على زر الإرسال
         console.log("🎯 جاري الضغط على زر التأكيد النهائي...");
         await page.evaluate(() => {
-            // نبحث عن أي زر إرسال (Submit) أو زر يحتوي على كلمة إرسال في الموقع بالكامل ونضغط عليه بالقوة
             const buttons = Array.from(document.querySelectorAll('button'));
             const submitBtn = buttons.find(b => b.type === 'submit' || b.innerText.includes('إرسال الطلبية'));
             if(submitBtn) {
+                submitBtn.scrollIntoView();
                 submitBtn.click();
             }
         });
-        console.log("🎉 نجاح! تم تسجيل الطلبية رسمياً في بابا الجزائر.");
 
+        console.log("⏳ ننتظر استجابة بابا الجزائر...");
         await new Promise(r => setTimeout(r, 4000));
+        
+        const currentUrl = page.url();
+        if (currentUrl.includes('orders') || currentUrl.includes('success')) {
+             console.log("🎉 نجاح ساحق! تم تسجيل الطلبية رسمياً.");
+        } else {
+             console.log("⚠️ تم الضغط على إرسال، لكن الموقع لم ينتقل لصفحة النجاح.");
+        }
 
     } catch (error) {
         console.error("❌ توقف البوت بسبب خطأ:", error.message);
     } finally {
         await browser.close();
-        console.log("🔒 تم إغلاق المتصفح الخفي بنجاح.");
+        console.log("🔒 تم إغلاق المتصفح الآلي.");
     }
 }
 
