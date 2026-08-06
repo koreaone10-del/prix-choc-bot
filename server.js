@@ -35,7 +35,7 @@ async function submitToBabaAlgeria(order) {
     await page.setViewport({ width: 1280, height: 800 });
 
     try {
-        console.log("🚀 بدء الأتمتة بالاستراتيجية المباشرة للطلبية:", order.customerName);
+        console.log("🚀 بدء الأتمتة المباشرة للطلبية:", order.customerName);
 
         // 1. تسجيل الدخول
         console.log("⏳ جاري فتح صفحة الدخول...");
@@ -44,48 +44,44 @@ async function submitToBabaAlgeria(order) {
         await page.waitForSelector('input[type="email"]', { timeout: 15000 });
         await page.type('input[type="email"]', process.env.BABA_EMAIL);
         await page.type('input[type="password"]', process.env.BABA_PASSWORD);
-        await page.click('button[type="submit"]');
         
-        console.log("⏳ ننتظر الدخول السلس...");
-        await new Promise(r => setTimeout(r, 5000)); 
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+            page.click('button[type="submit"]')
+        ]);
+        console.log("✅ تم الدخول بنجاح!");
 
-        // 2. التوجه المباشر لرابط المنتج
+        // 2. التوجه المباشر لرابط المنتج (استخدام الرقم المرسل من Vercel)
         const productLink = order.babaId.toString().includes('http') 
                             ? order.babaId 
                             : `https://www.babaalgeria.com/product/${order.babaId}`;
         
         console.log(`🔗 جاري التوجه لصفحة المنتج مباشرة: ${productLink}`);
-        await page.goto(productLink, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await new Promise(r => setTimeout(r, 3000)); 
-
-        // 3. الضغط على زر "ابدأ البيع الآن" وانتظار انتقال الصفحة فعلياً
-        console.log("🛒 جاري الضغط على زر 'ابدأ البيع الآن'...");
-        await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('*'));
-            // نبحث عن الزر بدقة ونتجاهل أي أكواد مخفية
-            const startBtn = elements.find(el => el.innerText && el.innerText.includes('ابدأ البيع') && el.tagName !== 'SCRIPT');
-            if(startBtn) {
-                startBtn.scrollIntoView();
-                startBtn.click();
-            }
-        });
-
-        console.log("⏳ ننتظر انتقال الصفحة إلى استمارة الطلبية...");
-        // الحل السحري: نجبر البوت على الانتظار حتى يتغير الرابط إلى create-order
-        try {
-            await page.waitForFunction(() => window.location.href.includes('create-order'), { timeout: 15000 });
-            console.log("✅ تم فتح صفحة الاستمارة بنجاح!");
-        } catch (e) {
-            console.log("⚠️ لم ينتقل تلقائياً، سنتوجه يدوياً...");
-            await page.goto('https://babaalgeria.com/create-order', { waitUntil: 'domcontentloaded' });
-        }
+        await page.goto(productLink, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        // انتظار إضافي لضمان ظهور كل الخانات
-        await new Promise(r => setTimeout(r, 3000)); 
+        // 3. الضغط على زر "ابدأ البيع الآن" وانتظار انتقال الصفحة للاستمارة
+        console.log("🛒 جاري البحث عن زر 'ابدأ البيع الآن'...");
+        try {
+            const startBtnXPath = "//button[contains(., 'ابدأ البيع')]";
+            await page.waitForXPath(startBtnXPath, { timeout: 10000 });
+            const [startBtn] = await page.$x(startBtnXPath);
+            
+            if(startBtn) {
+                console.log("✅ تم العثور على الزر! جاري الضغط والانتقال...");
+                // هذا الأمر يضغط على الزر وينتظر انتقال الصفحة في نفس اللحظة لضمان التحميل
+                await Promise.all([
+                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+                    startBtn.click()
+                ]);
+                console.log("✅ تم فتح استمارة الطلبية والمنتج محمل بداخلها!");
+            }
+        } catch (e) {
+            // توقيف العملية إذا لم يجد الزر، لكي لا يسجل طلبية فارغة
+            throw new Error(`لم يتم العثور على زر 'ابدأ البيع الآن'. الرابط الذي تمت زيارته هو: ${productLink} - تأكد أنك أرسلت الرقم 323 وليس الرمز NL-210`);
+        }
 
         // 4. كتابة سعر العمولة 
         console.log("💰 جاري تعديل السعر لضمان عمولتك...");
-        // الكود الجديد للبحث عن الخانات (مضاد لتغيرات التصميم)
         const priceXPath = "//*[contains(text(), 'سعر البيع')]/following::input[1]";
         try {
             await page.waitForXPath(priceXPath, { timeout: 10000 });
@@ -99,7 +95,7 @@ async function submitToBabaAlgeria(order) {
                 await new Promise(r => setTimeout(r, 1000));
             }
         } catch (e) {
-            console.log("⚠️ تحذير: لم أجد خانة السعر.");
+            console.log("⚠️ لم أجد خانة السعر، ربما تغير تصميم الموقع.");
         }
 
         // 5. إدخال بيانات الزبون
@@ -118,7 +114,6 @@ async function submitToBabaAlgeria(order) {
             } catch(e) {}
         };
 
-        // سيبحث عن الكلمة حتى لو كان بجانبها (إجباري)
         await typeInput('الاسم', firstName);
         await typeInput('اللقب', lastName);
         await typeInput('الهاتف', order.phone);
@@ -177,7 +172,7 @@ async function submitToBabaAlgeria(order) {
         }
 
     } catch (error) {
-        console.error("❌ توقف البوت بسبب خطأ غير متوقع:", error.message);
+        console.error("❌ توقف البوت بسبب خطأ:", error.message);
     } finally {
         await browser.close();
         console.log("🔒 تم إغلاق المتصفح الآلي.");
