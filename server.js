@@ -45,45 +45,60 @@ async function submitToBabaAlgeria(order) {
         await page.type('input[type="email"]', process.env.BABA_EMAIL);
         await page.type('input[type="password"]', process.env.BABA_PASSWORD);
         
+        console.log("⌨️ جاري الضغط على الدخول...");
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
             page.click('button[type="submit"]')
         ]);
-        console.log("✅ تم الدخول بنجاح!");
+        
+        // التعديل السحري: إجبار البوت على انتظار حفظ الجلسة (Session)
+        console.log("⏳ ننتظر 5 ثواني لضمان حفظ الجلسة في المتصفح...");
+        await new Promise(r => setTimeout(r, 5000));
+        console.log("✅ تم الدخول وحفظ الجلسة بنجاح!");
 
         // 2. الذكاء الاصطناعي لتصحيح أخطاء Vercel (Ghost Killer)
         let incomingId = order.babaLink || order.babaId;
         if (!incomingId) throw new Error("⚠️ لم يتم استلام أي رابط أو كود من Vercel!");
 
         let cleanId = incomingId.toString().trim();
-        
-        // إذا أرسل Vercel الرمز القديم بالغلط، البوت سيصلحه آلياً إلى رقم القبعة!
         if (cleanId === "NL-210" || cleanId === "NL-94") {
             cleanId = "323"; 
-            console.log("🛠️ تم اكتشاف رمز قديم من Vercel، تم التصحيح آلياً إلى الرابط: 323");
+            console.log("🛠️ تم اكتشاف رمز قديم، تم التصحيح آلياً إلى الرابط: 323");
         }
 
         const productLink = cleanId.includes('http') ? cleanId : `https://www.babaalgeria.com/product/${cleanId}`;
         
         console.log(`🔗 جاري التوجه لصفحة المنتج مباشرة: ${productLink}`);
         await page.goto(productLink, { waitUntil: 'networkidle2', timeout: 60000 });
+        await new Promise(r => setTimeout(r, 3000)); // انتظار اكتمال رسم الصفحة
         
-        // 3. الضغط على "ابدأ البيع الآن"
+        // 3. الضغط على "ابدأ البيع الآن" (طريقة البحث الشاملة)
         console.log("🛒 جاري البحث عن زر 'ابدأ البيع الآن'...");
-        try {
-            const startBtnXPath = "//button[contains(., 'ابدأ البيع')]";
-            await page.waitForXPath(startBtnXPath, { timeout: 10000 });
-            const [startBtn] = await page.$x(startBtnXPath);
-            
+        
+        const isButtonClicked = await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('*'));
+            // نبحث في كل عناصر الصفحة عن الكلمة، سواء كان رابط أو زر
+            const startBtn = elements.find(el => el.innerText && el.innerText.includes('ابدأ البيع') && el.tagName !== 'SCRIPT');
             if(startBtn) {
-                console.log("✅ تم العثور على الزر! جاري الانتقال...");
-                await Promise.all([
-                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
-                    startBtn.click()
-                ]);
+                startBtn.scrollIntoView();
+                startBtn.click();
+                return true;
             }
-        } catch (e) {
-            throw new Error(`❌ الرابط فارغ أو خاطئ: ${productLink}`);
+            return false;
+        });
+
+        if (isButtonClicked) {
+            console.log("✅ تم العثور على الزر والضغط عليه! ننتظر الاستمارة...");
+            // انتظار تحول الرابط إلى create-order
+            try {
+                await page.waitForFunction(() => window.location.href.includes('create-order'), { timeout: 15000 });
+            } catch(e) {
+                console.log("⚠️ لم يتغير الرابط، سنتوجه يدوياً...");
+                await page.goto('https://babaalgeria.com/create-order', { waitUntil: 'networkidle2' });
+            }
+            await new Promise(r => setTimeout(r, 3000));
+        } else {
+            throw new Error(`❌ لم يتم العثور على زر 'ابدأ البيع الآن' في الرابط: ${productLink}. تأكد أن المنتج متوفر.`);
         }
 
         // 4. كتابة سعر العمولة
