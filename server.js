@@ -6,6 +6,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// قاموس الولايات سيبقى هنا، لأن الزبون يختار الولاية في موقعك، والبوت يحتاج لمطابقتها في بابا الجزائر
 const wilayasMap = {
     "1": "أدرار", "2": "الشلف", "3": "الأغواط", "4": "أم البواقي", "5": "باتنة",
     "6": "بجاية", "7": "بسكرة", "8": "بشار", "9": "البليدة", "10": "البويرة",
@@ -51,10 +52,9 @@ async function submitToBabaAlgeria(order) {
         ]);
         console.log("✅ تم الدخول بنجاح!");
 
-        // 2. التوجه المباشر لرابط المنتج (استخدام الرقم المرسل من Vercel)
-        const productLink = order.babaId.toString().includes('http') 
-                            ? order.babaId 
-                            : `https://www.babaalgeria.com/product/${order.babaId}`;
+        // 2. التوجه المباشر لرابط المنتج (كما يرسله Vercel حرفياً)
+        // نقبل الرابط المباشر babaLink، أو نقوم ببنائه كإجراء احتياطي إذا تم إرسال الرقم فقط
+        const productLink = order.babaLink || (order.babaId && order.babaId.toString().includes('http') ? order.babaId : `https://www.babaalgeria.com/product/${order.babaId}`);
         
         console.log(`🔗 جاري التوجه لصفحة المنتج مباشرة: ${productLink}`);
         await page.goto(productLink, { waitUntil: 'networkidle2', timeout: 60000 });
@@ -68,7 +68,6 @@ async function submitToBabaAlgeria(order) {
             
             if(startBtn) {
                 console.log("✅ تم العثور على الزر! جاري الضغط والانتقال...");
-                // هذا الأمر يضغط على الزر وينتظر انتقال الصفحة في نفس اللحظة لضمان التحميل
                 await Promise.all([
                     page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
                     startBtn.click()
@@ -76,11 +75,10 @@ async function submitToBabaAlgeria(order) {
                 console.log("✅ تم فتح استمارة الطلبية والمنتج محمل بداخلها!");
             }
         } catch (e) {
-            // توقيف العملية إذا لم يجد الزر، لكي لا يسجل طلبية فارغة
-            throw new Error(`لم يتم العثور على زر 'ابدأ البيع الآن'. الرابط الذي تمت زيارته هو: ${productLink} - تأكد أنك أرسلت الرقم 323 وليس الرمز NL-210`);
+            throw new Error(`لم يتم العثور على زر 'ابدأ البيع الآن'. الرابط الذي تمت زيارته هو: ${productLink}`);
         }
 
-        // 4. كتابة سعر العمولة 
+        // 4. كتابة سعر العمولة (السعر القادم من موقعك)
         console.log("💰 جاري تعديل السعر لضمان عمولتك...");
         const priceXPath = "//*[contains(text(), 'سعر البيع')]/following::input[1]";
         try {
@@ -121,7 +119,7 @@ async function submitToBabaAlgeria(order) {
         const finalAddress = (order.commune ? order.commune + " - " : "") + order.address;
         await typeInput('العنوان', finalAddress);
 
-        // 6. قراءة واختيار الولاية
+        // 6. قراءة واختيار الولاية عبر الذكاء الاصطناعي
         const actualWilayaName = wilayasMap[order.wilaya] || order.wilaya;
         console.log(`🗺️ جاري تحديد الولاية [${actualWilayaName}]...`);
         try {
@@ -179,6 +177,7 @@ async function submitToBabaAlgeria(order) {
     }
 }
 
+// استقبال البيانات والرد السريع لمنع انتهاء المهلة (Timeout) من Vercel
 app.post('/api/order', (req, res) => {
     const orderData = req.body;
     res.status(200).json({ success: true, message: "Order received" });
@@ -187,5 +186,5 @@ app.post('/api/order', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🤖 خادم Prix Choc الخارق يعمل على المنفذ ${PORT}`);
+    console.log(`🤖 خادم Prix Choc المركزي يعمل على المنفذ ${PORT}`);
 });
