@@ -19,23 +19,31 @@ async function submitToBabaAlgeria(order) {
     });
     
     const page = await browser.newPage();
+    // تقليل حجم الشاشة لتسريع التحميل
+    await page.setViewport({ width: 800, height: 600 });
 
     try {
-        console.log("🚀 جاري بدء الأتمتة في الخلفية للطلبية:", order.customerName);
+        console.log("🚀 بدء الأتمتة للطلبية:", order.customerName);
 
-        // 1. تسجيل الدخول
-        await page.goto('https://babaalgeria.com/login', { waitUntil: 'networkidle2' });
+        // 1. تسجيل الدخول (استخدام domcontentloaded لسرعة فائقة)
+        console.log("⏳ جاري فتح صفحة الدخول...");
+        await page.goto('https://babaalgeria.com/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
         
+        console.log("⌨️ جاري كتابة البيانات...");
         await page.type('input[type="email"]', process.env.BABA_EMAIL);
         await page.type('input[type="password"]', process.env.BABA_PASSWORD);
         await page.click('button[type="submit"]');
-        await page.waitForNavigation({ waitUntil: 'networkidle2' });
-        console.log("✅ تم تسجيل الدخول بنجاح");
+        
+        console.log("⏳ ننتظر الدخول للحساب...");
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 });
+        console.log("✅ تم الدخول بنجاح!");
 
         // 2. التوجه لصفحة إنشاء طلبية
-        await page.goto('https://babaalgeria.com/create-order', { waitUntil: 'networkidle2' });
+        console.log("⏳ جاري فتح صفحة إضافة طلبية...");
+        await page.goto('https://babaalgeria.com/create-order', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
         // 3. إدخال كود المنتج والسعر
+        console.log("📦 جاري إدخال بيانات المنتج...");
         const productInputs = await page.$$('input[type="text"]');
         if(productInputs.length >= 2) {
             await productInputs[0].type(order.babaId); 
@@ -44,6 +52,7 @@ async function submitToBabaAlgeria(order) {
         }
 
         // 4. إدخال بيانات الزبون
+        console.log("👤 جاري إدخال معلومات الزبون...");
         const nameParts = order.customerName.split(' ');
         const firstName = nameParts[0];
         const lastName = nameParts.slice(1).join(' ') || '.'; 
@@ -61,6 +70,7 @@ async function submitToBabaAlgeria(order) {
         if(addressEl) await addressEl.type(order.address);
 
         // 5. اختيار الولاية
+        console.log("🗺️ جاري تحديد الولاية...");
         const [wilayaSelect] = await page.$x("//label[contains(text(), 'ولاية التوصيل')]/following-sibling::select");
         if(wilayaSelect) await wilayaSelect.select(order.wilaya);
 
@@ -74,33 +84,30 @@ async function submitToBabaAlgeria(order) {
         }
 
         // 7. النقر على زر "إرسال الطلبية"
+        console.log("🎯 جاري الضغط على زر التأكيد النهائي...");
         const [submitBtn] = await page.$x("//button[contains(text(), 'إرسال الطلبية')]");
         if(submitBtn) {
             await submitBtn.click();
-            console.log("✅ تم إرسال الطلبية بنجاح إلى بابا الجزائر!");
+            console.log("🎉 نجاح! تم تسجيل الطلبية رسمياً في بابا الجزائر.");
         }
 
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 4000));
 
     } catch (error) {
-        console.error("❌ حدث خطأ أثناء الأتمتة:", error);
+        console.error("❌ توقف البوت بسبب خطأ:", error.message);
     } finally {
         await browser.close();
+        console.log("🔒 تم إغلاق المتصفح الخفي.");
     }
 }
 
-// استقبال البيانات والرد الفوري لتجنب انتهاء المهلة (Timeout)
 app.post('/api/order', (req, res) => {
     const orderData = req.body;
-    
-    // الرد الفوري على موقع Vercel بأن الطلبية وصلت بنجاح لتظهر للزبون فوراً
     res.status(200).json({ success: true, message: "Order received" });
-
-    // تشغيل البوت في الخلفية بصمت تام لكي لا ينتظر الموقع
     submitToBabaAlgeria(orderData);
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🤖 خادم Prix Choc يعمل على المنفذ ${PORT}`);
+    console.log(`🤖 خادم Prix Choc يعمل بامتياز على المنفذ ${PORT}`);
 });
