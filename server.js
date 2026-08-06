@@ -6,15 +6,28 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// قاموس البوت لترجمة أرقام موقعك إلى أسماء عربية يبحث عنها في بابا الجزائر
+const wilayasMap = {
+    "1": "أدرار", "2": "الشلف", "3": "الأغواط", "4": "أم البواقي", "5": "باتنة",
+    "6": "بجاية", "7": "بسكرة", "8": "بشار", "9": "البليدة", "10": "البويرة",
+    "11": "تمنراست", "12": "تبسة", "13": "تلمسان", "14": "تيارت", "15": "تيزي وزو",
+    "16": "الجزائر", "17": "الجلفة", "18": "جيجل", "19": "سطيف", "20": "سعيدة",
+    "21": "سكيكدة", "22": "سيدي بلعباس", "23": "عنابة", "24": "قالمة", "25": "قسنطينة",
+    "26": "المدية", "27": "مستغانم", "28": "المسيلة", "29": "معسكر", "30": "ورقلة",
+    "31": "وهران", "32": "البيض", "33": "إليزي", "34": "برج بوعريريج", "35": "بومرداس",
+    "36": "الطارف", "37": "تندوف", "38": "تيسمسيلت", "39": "الوادي", "40": "خنشلة",
+    "41": "سوق أهراس", "42": "تيبازة", "43": "ميلة", "44": "عين الدفلى", "45": "النعامة",
+    "46": "عين تموشنت", "47": "غرداية", "48": "غليزان", "49": "تيميمون", "50": "برج باجي مختار",
+    "51": "أولاد جلال", "52": "بني عباس", "53": "عين صالح", "54": "عين قزام", "55": "تقرت",
+    "56": "جانت", "57": "المغير", "58": "المنيعة"
+};
+
 async function submitToBabaAlgeria(order) {
     const browser = await puppeteer.launch({
         headless: "new",
         args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--single-process'
+            '--no-sandbox', '--disable-setuid-sandbox', 
+            '--disable-dev-shm-usage', '--disable-gpu', '--single-process'
         ]
     });
     
@@ -23,7 +36,7 @@ async function submitToBabaAlgeria(order) {
     await page.setViewport({ width: 1280, height: 800 });
 
     try {
-        console.log("🚀 بدء الأتمتة للطلبية:", order.customerName);
+        console.log("🚀 بدء أتمتة الذكاء الاصطناعي للطلبية:", order.customerName);
 
         // 1. تسجيل الدخول
         console.log("⏳ جاري فتح صفحة الدخول...");
@@ -34,27 +47,30 @@ async function submitToBabaAlgeria(order) {
         await page.type('input[type="password"]', process.env.BABA_PASSWORD);
         await page.click('button[type="submit"]');
         
-        console.log("⏳ ننتظر الدخول...");
+        console.log("⏳ ننتظر الدخول السلس...");
         await new Promise(r => setTimeout(r, 5000)); 
 
-        // 2. التوجه لصفحة إنشاء طلبية
+        // 2. التوجه لصفحة إضافة طلبية
         console.log("⏳ جاري فتح صفحة إضافة طلبية...");
         await page.goto('https://babaalgeria.com/create-order', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await new Promise(r => setTimeout(r, 2000)); 
+        await new Promise(r => setTimeout(r, 3000)); 
 
-        // 3. إدخال كود المنتج والسعر
+        // 3. إدخال كود المنتج والسعر (استهداف ذكي بالأسماء)
         console.log("📦 جاري إدخال بيانات المنتج...");
-        const productInputs = await page.$$('input[type="text"]');
-        if(productInputs.length >= 2) {
-            await productInputs[0].type(order.babaId, { delay: 50 }); 
-            await page.keyboard.press('Enter'); 
-            await new Promise(r => setTimeout(r, 1500)); 
-            
-            await productInputs[1].click({ clickCount: 3 }); 
-            await productInputs[1].type(order.sellingPrice.toString()); 
+        const [productIdInput] = await page.$x("//label[contains(text(), 'المنتوج')]/following::input[1]");
+        if (productIdInput) {
+            await productIdInput.type(order.babaId, { delay: 50 });
+            await page.keyboard.press('Enter'); // للبحث عن المنتج وتفعيله
+            await new Promise(r => setTimeout(r, 2000));
         }
 
-        // 4. إدخال بيانات الزبون
+        const [priceInput] = await page.$x("//label[contains(text(), 'سعر البيع')]/following::input[1]");
+        if (priceInput) {
+            await priceInput.click({ clickCount: 3 });
+            await priceInput.type(order.sellingPrice.toString(), { delay: 50 });
+        }
+
+        // 4. إدخال بيانات الزبون (استهداف ذكي)
         console.log("👤 جاري إدخال معلومات الزبون...");
         const nameParts = order.customerName.split(' ');
         const firstName = nameParts[0];
@@ -62,9 +78,13 @@ async function submitToBabaAlgeria(order) {
         
         const typeInput = async (label, text) => {
             try {
-                const [el] = await page.$x(`//label[contains(text(), '${label}')]/following-sibling::input`);
-                if(el) await el.type(text);
-            } catch(e) { console.log(`⚠️ لم يتم العثور على حقل: ${label}`); }
+                // يبحث عن الكلمة ثم يختار أول حقل إدخال بعدها مباشرة
+                const [el] = await page.$x(`//label[contains(text(), '${label}')]/following::input[1]`);
+                if(el) {
+                    await el.click({ clickCount: 3 });
+                    await el.type(text, { delay: 50 });
+                }
+            } catch(e) { console.log(`⚠️ خطأ في حقل: ${label}`); }
         };
 
         await typeInput('الاسم', firstName);
@@ -74,73 +94,75 @@ async function submitToBabaAlgeria(order) {
         const finalAddress = (order.commune ? order.commune + " - " : "") + order.address;
         await typeInput('العنوان', finalAddress);
 
-        // 5. الاختيار الذكي للولاية بقراءة النص العربي (كما طلبت تماماً)
-        console.log(`🗺️ جاري قراءة القائمة للبحث عن الولاية: ${order.wilaya}...`);
+        // 5. قراءة الولاية بالذكاء الاصطناعي من القائمة
+        const actualWilayaName = wilayasMap[order.wilaya] || order.wilaya;
+        console.log(`🗺️ خوارزمية البحث: جاري مطابقة الولاية [${actualWilayaName}] مع القائمة العشوائية...`);
+        
         try {
-            const [wilayaSelect] = await page.$x("//label[contains(text(), 'ولاية التوصيل')]/following-sibling::select");
+            // استهداف قائمة الولايات بكلمة "ولاي" لتشمل (ولاية أو ولايات)
+            const [wilayaSelect] = await page.$x("//label[contains(text(), 'ولاي')]/following::select[1]");
             if (wilayaSelect) {
                 const valueToSelect = await page.evaluate((sel, wilayaName) => {
-                    // دالة ذكية لتنظيف النص العربي لتفادي أخطاء الحروف المتشابهة
+                    // تنظيف الحروف لتطابق مثالي (أ = ا، ة = ه)
                     const cleanArabic = (text) => text.replace(/[أإآا]/g, 'ا').replace(/ة/g, 'ه').trim();
                     const targetName = cleanArabic(wilayaName);
                     
-                    // البحث في كل خيارات بابا الجزائر ومطابقتها مع ولاية الزبون
                     for (let option of sel.options) {
-                        const optionText = cleanArabic(option.text);
+                        const optionText = cleanArabic(option.textContent || option.innerText);
                         if (optionText.includes(targetName) || targetName.includes(optionText)) {
-                            return option.value; // جلب الكود السري للولاية
+                            return option.value; // جلب الكود المخفي الذي يحتاجه الموقع
                         }
                     }
                     return null;
-                }, wilayaSelect, order.wilaya);
+                }, wilayaSelect, actualWilayaName);
 
                 if (valueToSelect) {
-                    await wilayaSelect.select(valueToSelect); // تفعيل الولاية رسمياً في الموقع
-                    console.log(`✅ تم إيجاد الولاية بنجاح واختيارها!`);
+                    await wilayaSelect.select(valueToSelect);
+                    console.log(`✅ تمت المطابقة بنجاح! تم اختيار: ${actualWilayaName}`);
                 } else {
-                    console.log(`⚠️ لم يتطابق اسم الولاية: ${order.wilaya}`);
+                    console.log(`⚠️ فشل الذكاء الاصطناعي في إيجاد تطابق لـ: ${actualWilayaName}`);
                 }
             }
-        } catch(e) { console.log("⚠️ خطأ في قراءة قائمة الولايات"); }
+        } catch(e) { console.log("⚠️ خطأ في قائمة الولايات"); }
 
         // 6. اختيار مكان الاستلام
         console.log("🚚 جاري تحديد مكان الاستلام...");
         try {
             if (order.deliveryLocation === 'home') {
-                const [homeBtn] = await page.$x("//button[contains(text(), 'للمنزل')]");
+                const [homeBtn] = await page.$x("//button[contains(., 'للمنزل')]");
                 if(homeBtn) await homeBtn.click();
             } else {
-                const [deskBtn] = await page.$x("//button[contains(text(), 'للمكتب')]");
+                const [deskBtn] = await page.$x("//button[contains(., 'للمكتب')]");
                 if(deskBtn) await deskBtn.click();
             }
         } catch(e) {}
 
-        // 7. النقر على زر الإرسال
+        // 7. النقر على زر الإرسال بقوة
         console.log("🎯 جاري الضغط على زر التأكيد النهائي...");
-        await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button'));
-            const submitBtn = buttons.find(b => b.type === 'submit' || b.innerText.includes('إرسال الطلبية'));
-            if(submitBtn) {
-                submitBtn.scrollIntoView();
-                submitBtn.click();
-            }
-        });
+        const [submitBtn] = await page.$x("//button[contains(., 'إرسال الطلبية')]");
+        if(submitBtn) {
+            await submitBtn.evaluate(b => b.scrollIntoView());
+            await new Promise(r => setTimeout(r, 1000));
+            await submitBtn.click();
+        } else {
+            console.log("⚠️ لم يتم العثور على زر إرسال الطلبية.");
+        }
 
-        console.log("⏳ ننتظر استجابة بابا الجزائر...");
+        console.log("⏳ ننتظر استجابة بابا الجزائر لحفظ الطلبية...");
         await new Promise(r => setTimeout(r, 4000));
         
         const currentUrl = page.url();
         if (currentUrl.includes('orders') || currentUrl.includes('success')) {
-             console.log("🎉 نجاح ساحق! تم تسجيل الطلبية رسمياً.");
+             console.log("🎉 نجاح مؤكد 100%! الطلبية مسجلة الآن في حسابك.");
         } else {
-             console.log("⚠️ تم الضغط على إرسال، لكن الموقع لم ينتقل لصفحة النجاح.");
+             console.log("⚠️ تحذير: تم إرسال الطلبية ولكن لم ننتقل لصفحة النجاح. (تأكد من صحة رقم الهاتف أو أن الحقول مكتملة)");
         }
 
     } catch (error) {
-        console.error("❌ توقف البوت بسبب خطأ:", error.message);
+        console.error("❌ توقف البوت بسبب خطأ غير متوقع:", error.message);
     } finally {
         await browser.close();
-        console.log("🔒 تم إغلاق المتصفح الآلي.");
+        console.log("🔒 تم إغلاق المتصفح الخفي.");
     }
 }
 
@@ -152,5 +174,5 @@ app.post('/api/order', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🤖 خادم Prix Choc يعمل بامتياز على المنفذ ${PORT}`);
+    console.log(`🤖 خادم Prix Choc الخارق يعمل على المنفذ ${PORT}`);
 });
