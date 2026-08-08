@@ -1,17 +1,13 @@
 {
   "name": "prix-choc-bot",
-  "version": "2.0.0",
-  "description": "أتمتة الطلبيات على منصة سوقلي Sawa9ly",
-  "main": "server.js",
+  "version": "3.0.0",
+  "main": "server.cjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.cjs"
   },
   "dependencies": {
     "express": "^4.18.2",
     "puppeteer": "^21.0.0",
     "cors": "^2.8.5"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   }
 }
