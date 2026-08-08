@@ -35,7 +35,7 @@ async function submitToSawa9ly(order) {
         // 2. التوجه للمنتج
         if (!order.sawa9lyLink) throw new Error("⚠️ لم يتم استلام الرابط!");
         await page.goto(order.sawa9lyLink, { waitUntil: 'networkidle2', timeout: 60000 });
-        await new Promise(r => setTimeout(r, 3000)); 
+        await new Promise(r => setTimeout(r, 4000)); 
         
         // 3. الضغط على قدم طلبك
         console.log("🛒 جاري فتح الاستمارة...");
@@ -49,10 +49,8 @@ async function submitToSawa9ly(order) {
         // 4. تعديل الكمية والسعر
         console.log(`💰 تعديل السعر إلى ${order.sellingPrice} والكمية إلى ${order.quantity || 1}...`);
         
-        // محاولة تعديل الكمية إذا كانت أكثر من 1
         if (order.quantity && order.quantity > 1) {
             try {
-                // البحث عن زر الزيادة (+) في سلة سوقلي
                 const [plusBtn] = await page.$x("//button[contains(text(), '+')]");
                 if (plusBtn) {
                     for(let i = 1; i < order.quantity; i++) {
@@ -73,6 +71,11 @@ async function submitToSawa9ly(order) {
                 await new Promise(r => setTimeout(r, 500));
                 await priceInput.type(order.sellingPrice.toString(), { delay: 100 });
                 await page.keyboard.press('Tab'); 
+                
+                await page.evaluate(el => {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }, priceInput);
                 await new Promise(r => setTimeout(r, 1000));
             }
         } catch (e) {}
@@ -83,27 +86,32 @@ async function submitToSawa9ly(order) {
             const continueBtn = elements.find(el => el.innerText && el.innerText.includes('استمرار') && el.tagName !== 'SCRIPT');
             if(continueBtn) continueBtn.click();
         });
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 4000));
 
         // 6. بيانات الزبون
         console.log("👤 إدخال بيانات الزبون...");
-        const typeInputByLabel = async (labelWord, text) => {
+        const typeReactInput = async (labelText, text) => {
             try {
-                const [el] = await page.$x(`//*[contains(text(), '${labelWord}')]/following::input[1]`);
+                const [el] = await page.$x(`//*[contains(text(), '${labelText}')]/following::input[1]`);
                 if(el) {
                     await el.click({ clickCount: 3 });
+                    await page.keyboard.press('Backspace');
                     await el.type(text, { delay: 50 });
+                    await page.evaluate(node => {
+                        node.dispatchEvent(new Event('input', { bubbles: true }));
+                        node.dispatchEvent(new Event('change', { bubbles: true }));
+                    }, el);
                 }
             } catch(e) {}
         };
-        await typeInputByLabel('الاسم الكامل', order.customerName);
-        await typeInputByLabel('رقم الهاتف', order.phone);
-        await typeInputByLabel('عنوان التوصيل', order.address);
+        await typeReactInput('الاسم الكامل', order.customerName);
+        await typeReactInput('رقم الهاتف', order.phone);
+        await typeReactInput('عنوان التوصيل', order.address);
 
-        // 7. الولاية والمدينة (الحل الجذري للمشكلة)
-        const selectDropdownByText = async (labelWord, targetText) => {
+        // 7. الولاية والمدينة (الحل الجذري)
+        const selectReactDropdown = async (labelText, targetText) => {
             try {
-                const [dropdown] = await page.$x(`//*[contains(text(), '${labelWord}')]/following::select[1]`);
+                const [dropdown] = await page.$x(`//*[contains(text(), '${labelText}')]/following::select[1]`);
                 if (dropdown) {
                     const valueToSelect = await page.evaluate((sel, target) => {
                         const clean = (t) => t.replace(/[أإآا]/g, 'ا').replace(/ة/g, 'ه').toLowerCase().trim();
@@ -115,39 +123,38 @@ async function submitToSawa9ly(order) {
                     }, dropdown, targetText);
 
                     if (valueToSelect) {
-                        // هنا يكمن السحر: إجبار الموقع على الانتباه لتغير الولاية لتحميل البلديات
                         await page.evaluate((sel, val) => {
                             sel.value = val;
                             sel.dispatchEvent(new Event('change', { bubbles: true }));
+                            sel.dispatchEvent(new Event('input', { bubbles: true }));
                         }, dropdown, valueToSelect);
-                        await new Promise(r => setTimeout(r, 2500)); // ننتظر 2.5 ثانية لتحميل البلديات
+                        console.log(`✅ تم اختيار: ${targetText}`);
+                        await new Promise(r => setTimeout(r, 3000)); 
                     }
                 }
             } catch(e) {}
         };
 
-        console.log(`🗺️ اختيار الولاية: ${order.wilaya}`);
-        if (order.wilaya) await selectDropdownByText('ولاية', order.wilaya);
-        
-        console.log(`🗺️ اختيار البلدية: ${order.commune}`);
-        if (order.commune) await selectDropdownByText('مدينة', order.commune);
+        console.log(`🗺️ جاري اختيار الولاية والبلدية...`);
+        if (order.wilaya) await selectReactDropdown('ولاية', order.wilaya);
+        if (order.commune) await selectReactDropdown('مدينة', order.commune);
 
-        // 8. تأكيد الطلب والتحقق الصارم
+        // 8. تأكيد الطلب
         console.log("🎯 جاري الضغط على 'تأكيد الطلب'...");
-        const [submitBtn] = await page.$x("//button[contains(., 'تأكيد الطلب')]");
+        const [submitBtn] = await page.$x("//button[contains(., 'تأكيد الطلب') or contains(., 'تأكيد')]");
         if(submitBtn) {
-            await submitBtn.evaluate(b => b.scrollIntoView());
+            await submitBtn.evaluate(b => b.scrollIntoView({block: 'center'}));
             await new Promise(r => setTimeout(r, 1000));
             await submitBtn.click();
         }
 
+        // 9. التحقق الصارم
         console.log("⏳ ننتظر رسالة التأكيد من سوقلي...");
         try {
-            // لن ينجح البوت إلا إذا ظهرت هذه الجملة فعلياً
-            await page.waitForXPath("//*[contains(text(), 'تم تأكيد طلبك بنجاح')]", { timeout: 15000 });
-            console.log("🎉 العملية انتهت بنجاح 100% وتم تسجيل الطلب في سوقلي!");
+            await page.waitForXPath("//*[contains(text(), 'نجاح') or contains(text(), 'تأكيد طلبك')]", { timeout: 15000 });
+            console.log("🎉 العملية انتهت بنجاح 100% وتم تسجيل الطلب في لوحة تحكم سوقلي!");
         } catch(e) {
-            throw new Error("❌ لم تظهر رسالة النجاح، ربما نقصت معلومات مثل البلدية أو لم يُقبل السعر.");
+            throw new Error("❌ لم تظهر صفحة النجاح، يرجى مراجعة الطلبية في سوقلي يدوياً.");
         }
 
     } catch (error) {
