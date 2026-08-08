@@ -6,7 +6,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// دالة مساعدة لتنظيف النصوص العربية والمطابقة الدقيقة في القوائم المنسدلة
+// دالة لتنظيف النصوص العربية للمطابقة في القوائم المنسدلة
 function cleanArabicText(text) {
     if (!text) return '';
     return text.replace(/[أإآا]/g, 'ا').replace(/ة/g, 'ه').trim();
@@ -42,19 +42,19 @@ async function submitToSawa9ly(order) {
             page.click('button[type="submit"]')
         ]);
         
-        console.log("⏳ ننتظر 5 ثواني لضمان حفظ الجلسة (Session) في متصفح سوقلي...");
+        console.log("⏳ ننتظر 5 ثواني لضمان حفظ الجلسة...");
         await new Promise(r => setTimeout(r, 5000));
         console.log("✅ تم الدخول وحفظ الجلسة بنجاح!");
 
-        // 2. التوجه لصفحة المنتج
-        const productLink = order.sawa9lyLink || (order.sawa9lyId ? `https://sawa9ly.app/product/${order.sawa9lyId}` : null);
-        if (!productLink) throw new Error("⚠️ لم يتم استلام رابط أو كود المنتج من Vercel!");
+        // 2. التوجه المباشر لصفحة المنتج
+        const productLink = order.sawa9lyLink;
+        if (!productLink) throw new Error("⚠️ لم يتم استلام رابط المنتج!");
 
         console.log(`🔗 جاري التوجه لصفحة المنتج: ${productLink}`);
         await page.goto(productLink, { waitUntil: 'networkidle2', timeout: 60000 });
         await new Promise(r => setTimeout(r, 3000)); 
         
-        // 3. الضغط على الزر الأخضر "قدم طلبك"
+        // 3. الضغط على "قدم طلبك"
         console.log("🛒 جاري البحث عن زر 'قدم طلبك' الأخضر...");
         const isOrderButtonClicked = await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
@@ -67,16 +67,14 @@ async function submitToSawa9ly(order) {
             return false;
         });
 
-        if (!isOrderButtonClicked) {
-            throw new Error(`❌ لم يتم العثور على زر 'قدم طلبك' في الرابط: ${productLink}`);
-        }
+        if (!isOrderButtonClicked) throw new Error(`❌ لم يتم العثور على زر 'قدم طلبك'.`);
         
         console.log("⏳ ننتظر تحميل استمارة السلة...");
         await new Promise(r => setTimeout(r, 4000));
 
-        // 4. تعديل السعر لضمان الفائدة
+        // 4. تعديل السعر
         console.log("💰 جاري تعديل السعر...");
-        const priceInputXPath = "//input[@type='number' or contains(@class, 'price')]"; // يبحث عن خانة تغيير السعر
+        const priceInputXPath = "//input[@type='number' or contains(@class, 'price')]"; 
         try {
             await page.waitForXPath(priceInputXPath, { timeout: 10000 });
             const [priceInput] = await page.$x(priceInputXPath);
@@ -89,26 +87,23 @@ async function submitToSawa9ly(order) {
                 await new Promise(r => setTimeout(r, 1000));
             }
         } catch (e) {
-            console.log("⚠️ ملاحظة: لم يتم العثور على خانة السعر بنفس الطريقة السابقة، قد يتطلب فحصاً أدق لاحقاً.");
+            console.log("⚠️ ملاحظة: لم نتمكن من تعديل السعر آلياً بهذه الطريقة.");
         }
 
-        // 5. الضغط على زر "استمرار" الأصفر
+        // 5. الضغط على "استمرار"
         console.log("⏭️ جاري الضغط على زر 'استمرار'...");
-        const isContinueClicked = await page.evaluate(() => {
+        await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('*'));
             const continueBtn = elements.find(el => el.innerText && el.innerText.includes('استمرار') && el.tagName !== 'SCRIPT');
             if(continueBtn) {
                 continueBtn.scrollIntoView();
                 continueBtn.click();
-                return true;
             }
-            return false;
         });
         await new Promise(r => setTimeout(r, 3000));
 
-        // 6. إدخال بيانات الزبون (الاسم الكامل والهاتف والعنوان)
-        console.log("👤 جاري إدخال معلومات التوصيل للزبون...");
-        
+        // 6. بيانات الزبون
+        console.log("👤 جاري إدخال معلومات التوصيل...");
         const typeInputByLabel = async (labelWord, text) => {
             try {
                 const [el] = await page.$x(`//*[contains(text(), '${labelWord}')]/following::input[1]`);
@@ -119,14 +114,12 @@ async function submitToSawa9ly(order) {
             } catch(e) {}
         };
 
-        // سوقلي يستخدم خانة واحدة للاسم الكامل
         await typeInputByLabel('الاسم الكامل', order.customerName);
         await typeInputByLabel('رقم الهاتف', order.phone);
         await typeInputByLabel('عنوان التوصيل', order.address);
 
-        // 7. اختيار الولاية والمدينة (البلدية) بالذكاء الاصطناعي النصي
-        console.log(`🗺️ خوارزمية الذكاء الاصطناعي: مطابقة الولاية [${order.wilaya}] والمدينة [${order.commune}]...`);
-        
+        // 7. الولاية والمدينة
+        console.log(`🗺️ مطابقة الولاية [${order.wilaya}] والمدينة [${order.commune}]...`);
         const selectDropdownByText = async (labelWord, targetText) => {
             try {
                 const [dropdown] = await page.$x(`//*[contains(text(), '${labelWord}')]/following::select[1]`);
@@ -134,32 +127,26 @@ async function submitToSawa9ly(order) {
                     const valueToSelect = await page.evaluate((sel, target) => {
                         const cleanArabic = (t) => t.replace(/[أإآا]/g, 'ا').replace(/ة/g, 'ه').trim();
                         const searchTarget = cleanArabic(target);
-                        
                         for (let option of sel.options) {
                             const optionText = cleanArabic(option.textContent || option.innerText);
-                            // يبحث عن الكلمة العربية داخل النص المركب (مثال: يبحث عن "عنابة" داخل "23 - Annaba / عنابة")
-                            if (optionText.includes(searchTarget)) {
-                                return option.value;
-                            }
+                            if (optionText.includes(searchTarget)) return option.value;
                         }
                         return null;
                     }, dropdown, targetText);
 
                     if (valueToSelect) {
                         await dropdown.select(valueToSelect);
-                        await new Promise(r => setTimeout(r, 1500)); // ننتظر قليلاً لكي تُحمل قائمة المدن بناءً على الولاية
+                        await new Promise(r => setTimeout(r, 1500)); 
                     }
                 }
             } catch(e) {}
         };
 
-        // اختيار الولاية أولاً
         if (order.wilaya) await selectDropdownByText('ولاية', order.wilaya);
-        // اختيار المدينة ثانياً
         if (order.commune) await selectDropdownByText('مدينة', order.commune);
 
-        // 8. النقر على زر تأكيد الطلب النهائي
-        console.log("🎯 جاري الضغط على الزر الأصفر 'تأكيد الطلب'...");
+        // 8. تأكيد الطلب
+        console.log("🎯 جاري الضغط على 'تأكيد الطلب'...");
         const [submitBtn] = await page.$x("//button[contains(., 'تأكيد الطلب')]");
         if(submitBtn) {
             await submitBtn.evaluate(b => b.scrollIntoView());
@@ -167,9 +154,8 @@ async function submitToSawa9ly(order) {
             await submitBtn.click();
         }
 
-        console.log("⏳ ننتظر صفحة النجاح (تم تأكيد طلبك بنجاح)...");
+        console.log("⏳ ننتظر صفحة النجاح...");
         await new Promise(r => setTimeout(r, 5000));
-        
         console.log("🎉 العملية انتهت بنجاح على منصة سوقلي!");
 
     } catch (error) {
@@ -188,5 +174,5 @@ app.post('/api/order', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🤖 خادم Prix Choc المركزي (نسخة سوقلي Sawa9ly) يعمل على المنفذ ${PORT}`);
+    console.log(`🤖 خادم Prix Choc المركزي يعمل على المنفذ ${PORT}`);
 });
