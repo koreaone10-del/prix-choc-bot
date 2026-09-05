@@ -1,13 +1,13 @@
 {
   "name": "prix-choc-bot",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "private": true,
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=22.17 <26"
+    "node": "22.x"
   },
   "dependencies": {
     "@sparticuz/chromium": "149.0.0",
