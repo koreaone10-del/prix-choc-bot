@@ -1,7 +1,19 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
+let puppeteer = null;
+let chromium = null;
+
+async function loadBrowserModules() {
+    if (!puppeteer) {
+        const puppeteerModule = await import('puppeteer-core');
+        puppeteer = puppeteerModule.default || puppeteerModule;
+    }
+    if (!chromium) {
+        const chromiumModule = await import('@sparticuz/chromium');
+        chromium = chromiumModule.default || chromiumModule;
+    }
+    return { puppeteer, chromium };
+}
 const locationTools = require('./locations.js');
 
 const app = express();
@@ -425,8 +437,10 @@ function resolveOrderLocations(order) {
 }
 
 async function submitNewSawa9ly(order) {
-    // Render does not need Puppeteer's automatic Chrome download.
-    // We use a pinned, self-contained Chromium binary instead.
+    // Load the ESM browser packages explicitly. Node can expose an ESM package
+    // through require() as a namespace object, which is why executablePath()
+    // was previously seen as "not a function" on Render.
+    await loadBrowserModules();
     chromium.setGraphicsMode = false;
     const executablePath = await chromium.executablePath();
     const launchArgs = await puppeteer.defaultArgs({
@@ -568,6 +582,7 @@ app.get('/health', (_req,res) => res.json({ ok:true, platform:'sawa9ly-affiliate
 app.get('/health/browser', async (_req,res) => {
     let browser;
     try {
+        await loadBrowserModules();
         chromium.setGraphicsMode = false;
         const executablePath = await chromium.executablePath();
         const args = await puppeteer.defaultArgs({ args: chromium.args, headless: 'shell' });
