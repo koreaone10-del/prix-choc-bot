@@ -26,29 +26,79 @@ function getDeliveryType(order) {
     return /طلب\s*استلام\s*من\s*المكتب|stop\s*desk/i.test(address) ? 'desk' : 'home';
 }
 
-async function clickFirstMatchingText(page, texts) {
-    const lowered = texts.map(t => String(t).toLowerCase());
-    const clicked = await page.evaluate((words) => {
-        const elements = Array.from(document.querySelectorAll('button,a,[role="button"]'));
+async function clickFirstMatchingText(page, texts, options = {}) {
+    const lowered = texts.map(t => String(t).toLowerCase().replace(/\s+/g, ' ').trim());
+    const timeout = options.timeout || 15000;
+    const started = Date.now();
+
+    while (Date.now() - started < timeout) {
+        const result = await page.evaluate((words) => {
+            const normalize = t => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const visible = el => {
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+            };
+            const isClickable = el => {
+                if (!el) return false;
+                const tag = el.tagName?.toLowerCase();
+                if (['button','a'].includes(tag) || el.getAttribute('role') === 'button') return true;
+                const s = getComputedStyle(el);
+                return s.cursor === 'pointer' || typeof el.onclick === 'function';
+            };
+
+            // First pass: real interactive controls.
+            const interactive = Array.from(document.querySelectorAll('button,a,[role="button"],input[type="button"],input[type="submit"]'));
+            for (const el of interactive) {
+                if (!visible(el)) continue;
+                const text = normalize(el.innerText || el.textContent || el.value);
+                if (words.some(w => text.includes(w))) {
+                    el.scrollIntoView({block:'center', inline:'center'});
+                    el.click();
+                    return {ok:true, text, tag:el.tagName.toLowerCase(), mode:'interactive'};
+                }
+            }
+
+            // Second pass: text may live inside a span/div while its clickable ancestor is higher up.
+            const all = Array.from(document.querySelectorAll('body *'));
+            for (const el of all) {
+                if (!visible(el)) continue;
+                const text = normalize(el.innerText || el.textContent);
+                if (!text || text.length > 120 || !words.some(w => text === w || text.includes(w))) continue;
+                let target = el;
+                for (let i=0; i<5 && target; i++, target=target.parentElement) {
+                    if (isClickable(target)) {
+                        target.scrollIntoView({block:'center', inline:'center'});
+                        target.click();
+                        return {ok:true, text, tag:target.tagName.toLowerCase(), mode:'ancestor'};
+                    }
+                }
+            }
+
+            return {ok:false};
+        }, lowered);
+
+        if (result?.ok) return `${result.text} [${result.mode}]`;
+        await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Diagnostic output: tell us what the page actually rendered if the button is still missing.
+    const diagnostics = await page.evaluate((words) => {
+        const normalize = t => String(t || '').replace(/\s+/g, ' ').trim();
         const visible = el => {
             const r = el.getBoundingClientRect();
             const s = getComputedStyle(el);
             return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
         };
-        const normalize = t => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        for (const el of elements) {
-            if (!visible(el)) continue;
-            const text = normalize(el.innerText || el.textContent);
-            if (words.some(w => text.includes(w))) {
-                el.click();
-                return text;
-            }
-        }
-        return '';
+        return Array.from(document.querySelectorAll('button,a,[role="button"],input[type="button"],input[type="submit"],body *'))
+            .filter(visible)
+            .map(el => ({tag:el.tagName.toLowerCase(), text:normalize(el.innerText || el.textContent || el.value)}))
+            .filter(x => x.text && words.some(w => x.text.toLowerCase().includes(w)))
+            .slice(0,20);
     }, lowered);
-    return clicked || '';
+    if (diagnostics.length) console.log(`   🔎 Commander diagnostics: ${JSON.stringify(diagnostics)}`);
+    return '';
 }
-
 async function fillFieldByHints(page, hints, value) {
     if (value === undefined || value === null || String(value) === '') return false;
     return page.evaluate(({ hints, value }) => {
@@ -167,14 +217,18 @@ async function submitNewSawa9ly(order) {
         console.log(`2️⃣ Product: ${productUrl}`);
         await page.goto(productUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(2500);
+        await page.waitForFunction(() => document.body && document.body.innerText && document.body.innerText.length > 100, {timeout:15000}).catch(()=>{});
 
         console.log('3️⃣ Clicking Commander maintenant / اطلب الآن...');
         const orderButton = await clickFirstMatchingText(page, [
-            'commander maintenant', 'commander', 'اطلب الآن', 'طلب الآن', 'buy now'
-        ]);
+            'commander maintenant', 'اطلب maintenant', 'commander', 'اطلب الآن', 'طلب الآن', 'buy now'
+        ], {timeout:20000});
         if (!orderButton) throw new Error('لم أجد زر Commander maintenant / اطلب الآن في المنتج الجديد.');
         console.log(`   ✅ Clicked: ${orderButton}`);
         await delay(1800);
+        console.log(`   🌐 After click URL: ${page.url()}`);
+        const orderFormVisible = await page.evaluate(() => /finaliser la commande|produits sélectionnés|prix de vente|mode de livraison/i.test(document.body?.innerText || '')).catch(()=>false);
+        console.log(`   🧾 Order form detected: ${orderFormVisible ? 'YES' : 'NO'}`);
 
         const deliveryType = getDeliveryType(order);
         console.log(`4️⃣ Selecting delivery mode: ${deliveryType === 'desk' ? 'Stop desk' : 'À domicile'}...`);
