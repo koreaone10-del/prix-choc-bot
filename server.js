@@ -270,12 +270,86 @@ async function selectByHints(page, hints, target) {
             if (sc > bestScore) { best = el; bestScore = sc; }
         }
         if (!best || bestScore === 0) return {ok:false};
-        const wanted = arabicNorm(target);
+        const rawTarget = String(target || '').trim();
+        const wanted = arabicNorm(rawTarget);
+
+        // Sawa9ly uses French wilaya labels such as `6 - Béjaïa`, while
+        // Prix-Choc may send the Arabic wilaya name (for example `بجاية`).
+        // Prefer the numeric wilaya code whenever the target contains one,
+        // then fall back to exact/contains matching with a bilingual alias map.
+        const aliases = {
+            'ادرار':'Adrar','أدرار':'Adrar',
+            'الشلف':'Chlef','شلف':'Chlef',
+            'الاغواط':'Laghouat','الأغواط':'Laghouat','اغواط':'Laghouat',
+            'ام البواقي':'Oum El Bouaghi','أم البواقي':'Oum El Bouaghi',
+            'باتنة':'Batna',
+            'بجاية':'Béjaïa',
+            'بسكرة':'Biskra',
+            'بشار':'Béchar','بشار':'Béchar',
+            'البليدة':'Blida','بليدة':'Blida',
+            'البويرة':'Bouira','بويرة':'Bouira',
+            'تمنراست':'Tamanrasset','تمنراست':'Tamanrasset',
+            'تبسة':'Tébessa',
+            'تلمسان':'Tlemcen',
+            'تيارت':'Tiaret',
+            'تيزي وزو':'Tizi Ouzou',
+            'الجزائر':'Alger','الجزائر العاصمة':'Alger',
+            'الجلفة':'Djelfa',
+            'جيجل':'Jijel',
+            'سطيف':'Sétif',
+            'سعيدة':'Saïda',
+            'سكيكدة':'Skikda',
+            'سيدي بلعباس':'Sidi Bel Abbès','سيدي بلعباس':'Sidi Bel Abbès',
+            'عنابة':'Annaba',
+            'قالمة':'Guelma',
+            'قسنطينة':'Constantine',
+            'المدية':'Médéa',
+            'مستغانم':'Mostaganem',
+            'المسيلة':"M'Sila",'مسيلة':"M'Sila",
+            'معسكر':'Mascara',
+            'ورقلة':'Ouargla',
+            'وهران':'Oran',
+            'البيض':'El Bayadh',
+            'اليزي':'Illizi','إليزي':'Illizi',
+            'برج بوعريريج':'Bordj Bou Arreridj',
+            'بومرداس':'Boumerdès',
+            'الطارف':'El Tarf',
+            'تندوف':'Tindouf',
+            'تيسمسيلت':'Tissemsilt',
+            'الوادي':'El Oued',
+            'خنشلة':'Khenchela',
+            'سوق أهراس':'Souk Ahras','سوق اهراس':'Souk Ahras',
+            'تيبازة':'Tipaza',
+            'ميلة':'Mila',
+            'عين الدفلى':'Aïn Defla','عين دفلى':'Aïn Defla',
+            'النعامة':'Naâma','نعامة':'Naâma',
+            'عين تموشنت':'Aïn Témouchent',
+            'غرداية':'Ghardaïa',
+            'غليزان':'Relizane',
+            'تيميمون':'Timimoun',
+            'برج باجي مختار':'Bordj Badji Mokhtar',
+            'أولاد جلال':'Ouled Djellal',
+            'بني عباس':'Beni Abbès','بني عباس':'Beni Abbès',
+            'عين صالح':'In Salah',
+            'عين قزام':'In Guezzam',
+            'تقرت':'Touggourt','توقرت':'Touggourt',
+            'جانت':'Djanet',
+            'المغير':"El M'Ghair",'المغير':"El M'Ghair",
+            'المنيعة':'El Meniaa'
+        };
+        const numericTarget = rawTarget.match(/(?:wilaya\s*)?(\d{1,2})/i)?.[1];
+        const alias = aliases[wanted] || aliases[rawTarget] || rawTarget;
+        const aliasNorm = arabicNorm(alias);
         const option = Array.from(best.options).find(o => {
             const t = arabicNorm(o.text);
-            return t === wanted || t.includes(wanted) || wanted.includes(t);
+            const optionCode = String(o.text || '').trim().match(/^(\d{1,2})\s*[-–—]/)?.[1];
+            if (numericTarget && optionCode === String(Number(numericTarget))) return true;
+            return t === wanted || t.includes(wanted) || wanted.includes(t) ||
+                   t === aliasNorm || t.includes(aliasNorm) || aliasNorm.includes(t);
         });
-        if (!option) return {ok:false};
+        if (!option) {
+            return {ok:false, available: Array.from(best.options).slice(0,80).map(o => o.text)};
+        }
         best.value = option.value;
         best.dispatchEvent(new Event('input',{bubbles:true}));
         best.dispatchEvent(new Event('change',{bubbles:true}));
@@ -349,7 +423,11 @@ async function submitNewSawa9ly(order) {
 
         console.log('6️⃣ Selecting wilaya...');
         const wilayaOk = await selectByHints(page, ['wilaya'], order.wilaya);
-        if (!wilayaOk) throw new Error(`لم أتمكن من اختيار الولاية: ${order.wilaya}`);
+        if (!wilayaOk) {
+            console.log(`   ⚠️ Wilaya value received from Prix-Choc: ${order.wilaya}`);
+            throw new Error(`لم أتمكن من اختيار الولاية: ${order.wilaya}`);
+        }
+        console.log(`   ✅ Wilaya selected: ${order.wilaya}`);
         await delay(800);
 
         console.log('7️⃣ Selecting commune...');
@@ -373,7 +451,7 @@ async function submitNewSawa9ly(order) {
         await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
         await delay(700);
         const confirm = await clickFirstMatchingText(page, [
-            'confirmer la commande','confirmer','valider la commande','valider','passer commande',
+            'confirmer la commande','confirmer la commande ','confirmer','valider la commande','valider','passer commande',
             'تأكيد الطلب','تأكيد','إتمام الطلب','place order','confirm order'
         ]);
         if (!confirm) throw new Error('لم أجد زر التأكيد النهائي في نموذج Sawa9ly الجديد.');
