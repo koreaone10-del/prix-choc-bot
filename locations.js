@@ -28,4 +28,3 @@
   function wilayaFrench(value){const code=wilayaCode(value); return code?WILAYA_FR_BY_CODE[code]:String(value||'');}
   return {WILAYA_FR_BY_CODE,WILAYA_AR_TO_CODE,arabicToLatin,wilayaCode,wilayaFrench,norm,strip};
 });
-
