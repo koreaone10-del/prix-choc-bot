@@ -26,5 +26,7 @@
   }
   function wilayaCode(value){const n=strip(value); if(/^\d{1,2}$/.test(n)) return String(Number(n)).padStart(2,'0'); for(const [ar,code] of Object.entries(WILAYA_AR_TO_CODE)){if(strip(ar)===n)return code;} return null;}
   function wilayaFrench(value){const code=wilayaCode(value); return code?WILAYA_FR_BY_CODE[code]:String(value||'');}
-  return {WILAYA_FR_BY_CODE,WILAYA_AR_TO_CODE,arabicToLatin,wilayaCode,wilayaFrench,norm,strip};
+  function resolveWilaya(value){const code=wilayaCode(value);return {code:code||'',ar:String(value||''),fr:code?WILAYA_FR_BY_CODE[code]:String(value||'')};}
+  function resolveCommune(value){const ar=String(value||'').trim();return {ar,fr:arabicToLatin(ar)};}
+  return {WILAYA_FR_BY_CODE,WILAYA_AR_TO_CODE,arabicToLatin,wilayaCode,wilayaFrench,resolveWilaya,resolveCommune,norm,strip};
 });
