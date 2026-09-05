@@ -7,6 +7,11 @@ app.use(cors());
 app.use(express.json());
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+const CLEAN_TEXT_RE = /[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g;
+function cleanText(value) {
+    return String(value || '').normalize('NFKC').replace(CLEAN_TEXT_RE, '').replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
 const orderQueue = [];
 let isProcessing = false;
 
@@ -27,78 +32,172 @@ function getDeliveryType(order) {
 }
 
 async function clickFirstMatchingText(page, texts, options = {}) {
-    const lowered = texts.map(t => String(t).toLowerCase().replace(/\s+/g, ' ').trim());
+    const lowered = texts.map(cleanText);
     const timeout = options.timeout || 15000;
     const started = Date.now();
 
-    while (Date.now() - started < timeout) {
-        const result = await page.evaluate((words) => {
-            const normalize = t => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    // Search the main document, open shadow roots, and same-origin frames.
+    // Sawa9ly's React UI can render interactive content through nested components,
+    // so a plain button query is not reliable enough.
+    async function clickInContext(context) {
+        return context.evaluate((words) => {
+            const normalize = t => String(t || '')
+                .normalize('NFKC')
+                .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g, '')
+                .replace(/\u00A0/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
             const visible = el => {
                 const r = el.getBoundingClientRect();
                 const s = getComputedStyle(el);
-                return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                return r.width > 1 && r.height > 1 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
             };
-            const isClickable = el => {
+            const clickable = el => {
                 if (!el) return false;
                 const tag = el.tagName?.toLowerCase();
                 if (['button','a'].includes(tag) || el.getAttribute('role') === 'button') return true;
                 const s = getComputedStyle(el);
-                return s.cursor === 'pointer' || typeof el.onclick === 'function';
+                return s.cursor === 'pointer' || typeof el.onclick === 'function' || el.hasAttribute('tabindex');
+            };
+            const candidates = [];
+            const add = (el, mode) => {
+                if (!el || !visible(el)) return;
+                const raw = el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '';
+                const text = normalize(raw);
+                if (!text || text.length > 160) return;
+                if (!words.some(w => text === w || text.includes(w))) return;
+                candidates.push({el, text, mode});
             };
 
-            // First pass: real interactive controls.
-            const interactive = Array.from(document.querySelectorAll('button,a,[role="button"],input[type="button"],input[type="submit"]'));
-            for (const el of interactive) {
-                if (!visible(el)) continue;
-                const text = normalize(el.innerText || el.textContent || el.value);
-                if (words.some(w => text.includes(w))) {
-                    el.scrollIntoView({block:'center', inline:'center'});
-                    el.click();
-                    return {ok:true, text, tag:el.tagName.toLowerCase(), mode:'interactive'};
-                }
-            }
+            // Real interactive controls first.
+            document.querySelectorAll('button,a,[role="button"],input[type="button"],input[type="submit"]')
+                .forEach(el => add(el, 'interactive'));
 
-            // Second pass: text may live inside a span/div while its clickable ancestor is higher up.
-            const all = Array.from(document.querySelectorAll('body *'));
-            for (const el of all) {
-                if (!visible(el)) continue;
-                const text = normalize(el.innerText || el.textContent);
-                if (!text || text.length > 120 || !words.some(w => text === w || text.includes(w))) continue;
+            // Then visible text nodes/elements and clickable ancestors.
+            document.querySelectorAll('body *').forEach(el => {
+                if (!visible(el)) return;
+                const raw = el.innerText || el.textContent || '';
+                const text = normalize(raw);
+                if (!text || text.length > 100 || !words.some(w => text === w || text.includes(w))) return;
                 let target = el;
-                for (let i=0; i<5 && target; i++, target=target.parentElement) {
-                    if (isClickable(target)) {
-                        target.scrollIntoView({block:'center', inline:'center'});
-                        target.click();
-                        return {ok:true, text, tag:target.tagName.toLowerCase(), mode:'ancestor'};
+                for (let i = 0; i < 7 && target; i++, target = target.parentElement) {
+                    if (clickable(target)) {
+                        add(target, 'ancestor');
+                        break;
                     }
                 }
-            }
+            });
 
-            return {ok:false};
+            // Prefer the shortest matching text: this avoids clicking a large
+            // container that merely contains the button label.
+            candidates.sort((a,b) => a.text.length - b.text.length);
+            const picked = candidates[0];
+            if (!picked) return {ok:false, candidates:[]};
+
+            picked.el.scrollIntoView({block:'center', inline:'center'});
+            picked.el.focus?.();
+            // Native click is preferred; dispatching a pointer sequence helps
+            // React/UI libraries that listen to pointer events.
+            try {
+                picked.el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true, cancelable:true, pointerType:'mouse'}));
+                picked.el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
+                picked.el.click();
+                picked.el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, view:window}));
+                picked.el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true, cancelable:true, pointerType:'mouse'}));
+            } catch (_) { picked.el.click(); }
+            return {ok:true, text:picked.text, tag:picked.el.tagName.toLowerCase(), mode:picked.mode};
         }, lowered);
-
-        if (result?.ok) return `${result.text} [${result.mode}]`;
-        await new Promise(r => setTimeout(r, 500));
     }
 
-    // Diagnostic output: tell us what the page actually rendered if the button is still missing.
-    const diagnostics = await page.evaluate((words) => {
-        const normalize = t => String(t || '').replace(/\s+/g, ' ').trim();
-        const visible = el => {
-            const r = el.getBoundingClientRect();
-            const s = getComputedStyle(el);
-            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-        };
-        return Array.from(document.querySelectorAll('button,a,[role="button"],input[type="button"],input[type="submit"],body *'))
-            .filter(visible)
-            .map(el => ({tag:el.tagName.toLowerCase(), text:normalize(el.innerText || el.textContent || el.value)}))
-            .filter(x => x.text && words.some(w => x.text.toLowerCase().includes(w)))
-            .slice(0,20);
-    }, lowered);
-    if (diagnostics.length) console.log(`   🔎 Commander diagnostics: ${JSON.stringify(diagnostics)}`);
+    while (Date.now() - started < timeout) {
+        try {
+            const result = await clickInContext(page);
+            if (result?.ok) return `${result.text} [${result.mode}]`;
+
+            // Search same-origin frames too.
+            for (const frame of page.frames()) {
+                if (frame === page.mainFrame()) continue;
+                try {
+                    const r = await clickInContext(frame);
+                    if (r?.ok) return `${r.text} [frame:${r.mode}]`;
+                } catch (_) {}
+            }
+        } catch (_) {}
+        await delay(400);
+    }
+
+    // Final diagnostics: print every visible interactive label and matching
+    // text candidate. This makes the next failure actionable instead of guesswork.
+    try {
+        const diagnostics = await page.evaluate((words) => {
+            const normalize = t => String(t || '').normalize('NFKC')
+                .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g, '')
+                .replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim();
+            const visible = el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'; };
+            return Array.from(document.querySelectorAll('button,a,[role="button"],input,body *'))
+                .filter(visible)
+                .map(el => ({tag:el.tagName.toLowerCase(), text:normalize(el.innerText||el.textContent||el.value||el.getAttribute('aria-label')||''), cls:String(el.className||'').slice(0,120)}))
+                .filter(x => x.text && (x.text.length <= 100 || words.some(w=>x.text.toLowerCase().includes(w))))
+                .filter((x,i,a)=>i===a.findIndex(y=>y.tag===x.tag&&y.text===x.text))
+                .slice(0,80);
+        }, lowered);
+        console.log(`   🔎 Click diagnostics: ${JSON.stringify(diagnostics)}`);
+    } catch (e) {
+        console.log(`   🔎 Click diagnostics unavailable: ${e.message}`);
+    }
     return '';
 }
+
+async function closeSawa9lyDrawer(page) {
+    // After Commander maintenant, the new Sawa9ly checkout can leave the cart
+    // drawer open on the right. In the real UI, tapping the page away from the
+    // drawer closes it. Reproduce that first, then use semantic close controls.
+    try {
+        await page.mouse.click(80, 420);
+        await delay(500);
+    } catch (_) {}
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const closed = await page.evaluate(() => {
+            const norm = t => String(t || '').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'').replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim().toLowerCase();
+            const visible = el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'; };
+            const labels = ['fermer','close','×','✕','إغلاق'];
+            const els = Array.from(document.querySelectorAll('button,[role="button"],a'));
+            for (const el of els) {
+                if (!visible(el)) continue;
+                const text = norm(el.innerText || el.textContent || el.getAttribute('aria-label') || el.title);
+                if (labels.includes(text) || labels.some(x => text === x)) { el.click(); return true; }
+            }
+            // If no close control is exposed, click a safe point on the left
+            // side of the checkout (outside the right drawer) like a human user.
+            const drawer = els.map(e=>e.parentElement).find(e => e && visible(e) && /mon panier|panier|cart/i.test(norm(e.innerText||'')));
+            if (drawer) {
+                const r = drawer.getBoundingClientRect();
+                if (r.left > 250) {
+                    const x = Math.max(20, Math.min(r.left - 30, window.innerWidth * 0.35));
+                    const y = Math.min(window.innerHeight * 0.45, Math.max(80, r.top + 120));
+                    const target = document.elementFromPoint(x,y);
+                    target?.click();
+                    return true;
+                }
+            }
+            return false;
+        }).catch(()=>false);
+        if (!closed) break;
+        await delay(500);
+    }
+}
+
+async function waitForOrderForm(page, timeout=15000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        const detected = await page.evaluate(() => /finaliser la commande|produits sélectionnés|prix de vente|mode de livraison|informations client/i.test(document.body?.innerText || '')).catch(()=>false);
+        if (detected) return true;
+        await delay(500);
+    }
+    return false;
+}
+
 async function fillFieldByHints(page, hints, value) {
     if (value === undefined || value === null || String(value) === '') return false;
     return page.evaluate(({ hints, value }) => {
@@ -225,10 +324,14 @@ async function submitNewSawa9ly(order) {
         ], {timeout:20000});
         if (!orderButton) throw new Error('لم أجد زر Commander maintenant / اطلب الآن في المنتج الجديد.');
         console.log(`   ✅ Clicked: ${orderButton}`);
-        await delay(1800);
+        await delay(1000);
         console.log(`   🌐 After click URL: ${page.url()}`);
-        const orderFormVisible = await page.evaluate(() => /finaliser la commande|produits sélectionnés|prix de vente|mode de livraison/i.test(document.body?.innerText || '')).catch(()=>false);
+        const orderFormVisible = await waitForOrderForm(page, 15000);
         console.log(`   🧾 Order form detected: ${orderFormVisible ? 'YES' : 'NO'}`);
+        if (!orderFormVisible) throw new Error('تم الضغط على Commander maintenant لكن نموذج Finaliser la commande لم يظهر.');
+        await closeSawa9lyDrawer(page);
+        await delay(700);
+        console.log('   🧹 Checkout drawer handled; continuing with the form...');
 
         const deliveryType = getDeliveryType(order);
         console.log(`4️⃣ Selecting delivery mode: ${deliveryType === 'desk' ? 'Stop desk' : 'À domicile'}...`);
