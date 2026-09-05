@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const puppeteer = require('puppeteer');
+const locationTools = require('./locations.js');
 
 const app = express();
 app.use(cors());
@@ -243,119 +244,59 @@ async function fillFieldByHints(page, hints, value) {
         return true;
     }, { hints, value: String(value) });
 }
-async function selectByHints(page, hints, target) {
-    if (!target) return false;
-    const result = await page.evaluate(({ hints, target }) => {
+async function selectByHints(page, hints, target, extraTargets = []) {
+    if (!target && (!extraTargets || !extraTargets.length)) return false;
+    const targets = [target, ...(Array.isArray(extraTargets) ? extraTargets : [])]
+        .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+        .map(v => String(v).trim());
+    const generated = [];
+    for (const t of targets) {
+        try { generated.push(locationTools.arabicToLatin(t)); } catch (_) {}
+    }
+    const allTargets = [...new Set([...targets, ...generated].filter(Boolean))];
+    const result = await page.evaluate(({ hints, targets }) => {
         const words = hints.map(x => String(x).toLowerCase());
-        const norm = t => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        const arabicNorm = t => norm(t).replace(/[أإآا]/g,'ا').replace(/ة/g,'ه');
-        const visible = el => {
-            const r = el.getBoundingClientRect();
-            const s = getComputedStyle(el);
-            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+        const norm = t => String(t || '').normalize('NFKC').normalize('NFD')
+            .replace(/[\u0300-\u036f]/g,'').replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'')
+            .replace(/[’'`]/g,'').replace(/[-_/.,]/g,' ').replace(/\s+/g,' ').trim().toLowerCase();
+        const visible = el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'; };
+        const scoreField = el => {
+            const attrs=[el.name,el.id,el.getAttribute('aria-label'),el.getAttribute('placeholder')].map(norm).join(' ');
+            let label=''; if(el.id){const l=document.querySelector(`label[for="${CSS.escape(el.id)}"]`);if(l)label+=norm(l.innerText)}
+            return words.reduce((n,w)=>n+((attrs+' '+label).includes(w)?1:0),0);
         };
-        const score = el => {
-            const attrs = [el.name, el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder')].map(norm).join(' ');
-            let label = '';
-            if (el.id) {
-                const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-                if (l) label += ' ' + norm(l.innerText);
-            }
-            return words.reduce((n,w) => n + ((attrs + ' ' + label).includes(w) ? 1 : 0), 0);
-        };
-        const selects = Array.from(document.querySelectorAll('select')).filter(visible);
-        let best = null, bestScore = 0;
-        for (const el of selects) {
-            const sc = score(el);
-            if (sc > bestScore) { best = el; bestScore = sc; }
+        const selects=Array.from(document.querySelectorAll('select')).filter(visible);
+        let best=null,bestScore=0; for(const el of selects){const sc=scoreField(el);if(sc>bestScore){best=el;bestScore=sc;}}
+        if(!best||bestScore===0)return {ok:false,reason:'no-select'};
+        const wanted=targets.map(norm).filter(Boolean);
+        const options=Array.from(best.options).filter(o=>norm(o.text));
+        // Exact normalized match first.
+        let option=options.find(o=>wanted.includes(norm(o.text)));
+        // Then contains match, preferring the shortest option that contains the target.
+        if(!option){
+            const hits=options.filter(o=>wanted.some(t=>{const x=norm(o.text);return x===t||x.includes(t)||t.includes(x)}));
+            hits.sort((a,b)=>norm(a.text).length-norm(b.text).length); option=hits[0];
         }
-        if (!best || bestScore === 0) return {ok:false};
-        const rawTarget = String(target || '').trim();
-        const wanted = arabicNorm(rawTarget);
-
-        // Sawa9ly uses French wilaya labels such as `6 - Béjaïa`, while
-        // Prix-Choc may send the Arabic wilaya name (for example `بجاية`).
-        // Prefer the numeric wilaya code whenever the target contains one,
-        // then fall back to exact/contains matching with a bilingual alias map.
-        const aliases = {
-            'ادرار':'Adrar','أدرار':'Adrar',
-            'الشلف':'Chlef','شلف':'Chlef',
-            'الاغواط':'Laghouat','الأغواط':'Laghouat','اغواط':'Laghouat',
-            'ام البواقي':'Oum El Bouaghi','أم البواقي':'Oum El Bouaghi',
-            'باتنة':'Batna',
-            'بجاية':'Béjaïa',
-            'بسكرة':'Biskra',
-            'بشار':'Béchar','بشار':'Béchar',
-            'البليدة':'Blida','بليدة':'Blida',
-            'البويرة':'Bouira','بويرة':'Bouira',
-            'تمنراست':'Tamanrasset','تمنراست':'Tamanrasset',
-            'تبسة':'Tébessa',
-            'تلمسان':'Tlemcen',
-            'تيارت':'Tiaret',
-            'تيزي وزو':'Tizi Ouzou',
-            'الجزائر':'Alger','الجزائر العاصمة':'Alger',
-            'الجلفة':'Djelfa',
-            'جيجل':'Jijel',
-            'سطيف':'Sétif',
-            'سعيدة':'Saïda',
-            'سكيكدة':'Skikda',
-            'سيدي بلعباس':'Sidi Bel Abbès','سيدي بلعباس':'Sidi Bel Abbès',
-            'عنابة':'Annaba',
-            'قالمة':'Guelma',
-            'قسنطينة':'Constantine',
-            'المدية':'Médéa',
-            'مستغانم':'Mostaganem',
-            'المسيلة':"M'Sila",'مسيلة':"M'Sila",
-            'معسكر':'Mascara',
-            'ورقلة':'Ouargla',
-            'وهران':'Oran',
-            'البيض':'El Bayadh',
-            'اليزي':'Illizi','إليزي':'Illizi',
-            'برج بوعريريج':'Bordj Bou Arreridj',
-            'بومرداس':'Boumerdès',
-            'الطارف':'El Tarf',
-            'تندوف':'Tindouf',
-            'تيسمسيلت':'Tissemsilt',
-            'الوادي':'El Oued',
-            'خنشلة':'Khenchela',
-            'سوق أهراس':'Souk Ahras','سوق اهراس':'Souk Ahras',
-            'تيبازة':'Tipaza',
-            'ميلة':'Mila',
-            'عين الدفلى':'Aïn Defla','عين دفلى':'Aïn Defla',
-            'النعامة':'Naâma','نعامة':'Naâma',
-            'عين تموشنت':'Aïn Témouchent',
-            'غرداية':'Ghardaïa',
-            'غليزان':'Relizane',
-            'تيميمون':'Timimoun',
-            'برج باجي مختار':'Bordj Badji Mokhtar',
-            'أولاد جلال':'Ouled Djellal',
-            'بني عباس':'Beni Abbès','بني عباس':'Beni Abbès',
-            'عين صالح':'In Salah',
-            'عين قزام':'In Guezzam',
-            'تقرت':'Touggourt','توقرت':'Touggourt',
-            'جانت':'Djanet',
-            'المغير':"El M'Ghair",'المغير':"El M'Ghair",
-            'المنيعة':'El Meniaa'
-        };
-        const numericTarget = rawTarget.match(/(?:wilaya\s*)?(\d{1,2})/i)?.[1];
-        const alias = aliases[wanted] || aliases[rawTarget] || rawTarget;
-        const aliasNorm = arabicNorm(alias);
-        const option = Array.from(best.options).find(o => {
-            const t = arabicNorm(o.text);
-            const optionCode = String(o.text || '').trim().match(/^(\d{1,2})\s*[-–—]/)?.[1];
-            if (numericTarget && optionCode === String(Number(numericTarget))) return true;
-            return t === wanted || t.includes(wanted) || wanted.includes(t) ||
-                   t === aliasNorm || t.includes(aliasNorm) || aliasNorm.includes(t);
-        });
-        if (!option) {
-            return {ok:false, available: Array.from(best.options).slice(0,80).map(o => o.text)};
+        // For wilaya selects, numeric code is authoritative when present.
+        if(!option && hints.some(h=>/wilaya/i.test(String(h)))){
+            for(const t of targets){const m=String(t).match(/^0?(\d{1,2})$/);if(!m)continue;const code=String(Number(m[1]));option=options.find(o=>{const m2=String(o.text).trim().match(/^(\d{1,2})\s*[-–—]/);return m2&&String(Number(m2[1]))===code;});if(option)break;}
         }
-        best.value = option.value;
-        best.dispatchEvent(new Event('input',{bubbles:true}));
-        best.dispatchEvent(new Event('change',{bubbles:true}));
-        best.dispatchEvent(new Event('blur',{bubbles:true}));
-        return {ok:true};
-    }, { hints, target: String(target) });
+        // Conservative fuzzy fallback for commune spellings. This handles
+        // harmless differences such as Beni/Bni, Ouled/Oulad, accents and
+        // apostrophes without blindly choosing a distant municipality.
+        if(!option && hints.some(h=>/commune/i.test(String(h)))){
+            const lev=(a,b)=>{const m=a.length,n=b.length;if(!m)return n;if(!n)return m;const row=Array(n+1);for(let j=0;j<=n;j++)row[j]=j;for(let i=1;i<=m;i++){let prev=row[0];row[0]=i;for(let j=1;j<=n;j++){const cur=row[j];row[j]=Math.min(row[j]+1,row[j-1]+1,prev+(a[i-1]===b[j-1]?0:1));prev=cur;}}return row[n];};
+            const sim=(a,b)=>{const x=norm(a),y=norm(b);if(!x||!y)return 0;const ed=1-lev(x,y)/Math.max(x.length,y.length);const ax=new Set(x.split(' ').filter(Boolean)),by=new Set(y.split(' ').filter(Boolean));let common=0;for(const z of ax)if(by.has(z))common++;const tok=common/Math.max(ax.size,by.size);return Math.max(ed,tok*0.92);};
+            let best=null,bestScore=0,second=0;
+            for(const o of options){const sc=Math.max(...wanted.map(t=>sim(t,o.text)));if(sc>bestScore){second=bestScore;bestScore=sc;best=o;}else if(sc>second)second=sc;}
+            if(best && bestScore>=0.82 && bestScore-second>=0.04) option=best;
+        }
+        if(!option)return {ok:false,available:options.slice(0,100).map(o=>o.text)};
+        best.value=option.value;
+        best.dispatchEvent(new Event('input',{bubbles:true}));best.dispatchEvent(new Event('change',{bubbles:true}));best.dispatchEvent(new Event('blur',{bubbles:true}));
+        return {ok:true,text:option.text};
+    }, {hints,targets:allTargets});
+    if(!result.ok && result.available) console.log(`   🔎 Select diagnostics (${hints.join(',')}): ${JSON.stringify(result.available.slice(0,60))}`);
     return !!result.ok;
 }
 async function login(page) {
@@ -370,6 +311,16 @@ async function login(page) {
     await delay(5000);
     if (/\/login/i.test(page.url())) throw new Error('تسجيل الدخول إلى Sawa9ly الجديد لم ينجح.');
     console.log(`   ✅ Logged in: ${page.url()}`);
+}
+
+function resolveOrderLocations(order) {
+    const wilayaCode = String(order?.wilayaCode || locationTools.wilayaCode(order?.wilayaAr || order?.wilayaFr || order?.wilaya || '') || '').padStart(2,'0');
+    const wilayaFr = String(order?.wilayaFr || order?.wilaya || (wilayaCode && locationTools.WILAYA_FR_BY_CODE?.[wilayaCode]) || '').trim();
+    const wilayaAr = String(order?.wilayaAr || '').trim();
+    const communeFr = String(order?.communeFr || order?.commune || '').trim();
+    const communeAr = String(order?.communeAr || '').trim();
+    const communeGenerated = communeAr && locationTools.arabicToLatin ? locationTools.arabicToLatin(communeAr) : '';
+    return { wilayaCode, wilayaFr, wilayaAr, communeFr, communeAr, communeGenerated };
 }
 
 async function submitNewSawa9ly(order) {
@@ -421,18 +372,17 @@ async function submitNewSawa9ly(order) {
         console.log(`   ✅ Selling price set to ${order.sellingPrice} DA.`);
         await delay(400);
 
+        const locations = resolveOrderLocations(order);
         console.log('6️⃣ Selecting wilaya...');
-        const wilayaOk = await selectByHints(page, ['wilaya'], order.wilaya);
-        if (!wilayaOk) {
-            console.log(`   ⚠️ Wilaya value received from Prix-Choc: ${order.wilaya}`);
-            throw new Error(`لم أتمكن من اختيار الولاية: ${order.wilaya}`);
-        }
-        console.log(`   ✅ Wilaya selected: ${order.wilaya}`);
-        await delay(800);
+        const wilayaOk = await selectByHints(page, ['wilaya'], locations.wilayaCode || locations.wilayaFr, [locations.wilayaFr, locations.wilayaAr]);
+        if (!wilayaOk) throw new Error(`لم أتمكن من اختيار الولاية: ${locations.wilayaFr || locations.wilayaAr || locations.wilayaCode}`);
+        console.log(`   ✅ Wilaya selected: ${locations.wilayaFr || locations.wilayaCode}`);
+        await delay(900);
 
         console.log('7️⃣ Selecting commune...');
-        const communeOk = await selectByHints(page, ['commune'], order.commune);
-        if (!communeOk) throw new Error(`لم أتمكن من اختيار البلدية: ${order.commune}`);
+        const communeOk = await selectByHints(page, ['commune'], locations.communeFr, [locations.communeGenerated, locations.communeAr]);
+        if (!communeOk) throw new Error(`لم أتمكن من اختيار البلدية: ${locations.communeFr || locations.communeAr}`);
+        console.log(`   ✅ Commune selected: ${locations.communeFr || locations.communeGenerated}`);
         await delay(500);
 
         console.log('8️⃣ Filling customer information...');
