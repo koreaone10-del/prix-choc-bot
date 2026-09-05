@@ -13,8 +13,88 @@
   SPECIAL['وادي سلي']='Oued Sly'; SPECIAL['أقبو']='Akbou'; SPECIAL['مشدالله']="M'Chedallah"; SPECIAL['ذراع الميزان']='Draâ El Mizan'; SPECIAL['ذراع بن خدة']='Draâ Ben Khedda'; SPECIAL['بوغني']='Boghni'; SPECIAL['عزازقة']='Azazga'; SPECIAL['تيقزيرت']='Tigzirt'; SPECIAL['فريحة']='Fréha'; SPECIAL['مقلع']='Mekla'; SPECIAL['معاتقة']='Maatkas'; SPECIAL['بني يني']='Beni Yenni'; SPECIAL['واقنون']='Ouaguenoun'; SPECIAL['واسيف']='Ouacif'; SPECIAL['إغيل علي']='Ighil Ali'; SPECIAL['خراطة']='Kherrata'; SPECIAL['صدوق']='Seddouk'; SPECIAL['سيدي عيش']='Sidi Aïch'; SPECIAL['أوزلاقن']='Ouzellaguen'; SPECIAL['برباشة']='Barbacha'; SPECIAL['بوخليفة']='Boukhelifa'; SPECIAL['بوحمزة']='Bouhamza'; SPECIAL['تازمالت']='Tazmalt'; SPECIAL['تامقرة']='Tamokra'; SPECIAL['تيزي نبربر']="Tizi N'Berber"; SPECIAL['ذراع القايد']='Draâ El Kaïd'; SPECIAL['لفلاي']='Leflaye'; SPECIAL['أدكار']='Adekar';
   function norm(v){return String(v??'').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'').replace(/\s+/g,' ').trim();}
   function strip(v){return norm(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[’'`]/g,'').replace(/[.,_\-/]/g,' ').replace(/\s+/g,' ').trim();}
+
+  // Canonical commune names used by Sawa9ly. The storefront may contain
+  // short/phonetic transliterations (e.g. "tns"), while Sawa9ly uses
+  // the full French/Latin municipality name (e.g. "Tenes"/"Ténès").
+  const COMMUNE_CANONICAL={
+    'تنس':'Ténès',
+    'تونس':'Ténès',
+    'الشلف':'Chlef',
+    'بنايرية':'Benairia',
+    'الكريمية':'El Karimia',
+    'تاجنة':'Tadjena',
+    'تاوقريت':'Taougrite',
+    'بني حواء':'Beni Haoua',
+    'حرشون':'Harchoun',
+    'أولاد فارس':'Ouled Fares',
+    'سيدي عكاشة':'Sidi Akkacha',
+    'بوقدير':'Boukadir',
+    'بني راشد':'Beni Rached',
+    'تلعصة':'Talassa',
+    'الهرنفة':'Herenfa',
+    'الأبيض مجاجة':'Labiod Medjadja',
+    'مصدق':'Moussadek',
+    'وادي الفضة':'Oued Fodda',
+    'وادي قوسين':'Oued Goussine',
+    'وادي سلي':'Oued Sly',
+    'أولاد عباس':'Ouled Abbes',
+    'أولاد بن عبد القادر':'Ouled Ben Abdelkader',
+    'بوزغاية':'Bouzghaia',
+    'عين مران':'Ain Merane',
+    'أم الدروع':'Oum Drou',
+    'سنجاس':'Sendjas',
+    'سيدي عبد الرحمن':'Sidi Abderrahmane',
+    'بني بوعتاب':'Beni Bouattab',
+    'الزبوجة':'Zeboudja',
+    'الشطية':'Chettia',
+    'الظهرة':'Dahra',
+    'تنس':'Ténès',
+    'أبو الحسن':'Abou El Hassen',
+    'أبو الحسن':'Abou El Hassen'
+  };
+  const COMMUNE_FR_ALIASES={
+    'tns':'Ténès','tenes':'Ténès','tenès':'Ténès','tenez':'Ténès',
+    'bouqadir':'Boukadir','boukadir':'Boukadir',
+    'beni houa':'Beni Haoua','beni haoua':'Beni Haoua',
+    'abou el hsn':'Abou El Hassen','abou el hassan':'Abou El Hassen','abou el hassen':'Abou El Hassen',
+    'aoulad fars':'Ouled Fares','ouled fars':'Ouled Fares',
+    'ouadi el fda':'Oued Fodda','oued el fda':'Oued Fodda','oued fodda':'Oued Fodda','wadi al fiddha':'Oued Fodda',
+    'el zboudja':'Zeboudja','zeboudja':'Zeboudja',
+    'taouqrit':'Taougrite','taougrite':'Taougrite',
+    'am el droua':'Oum Drou','oum el drou':'Oum Drou','oum drou':'Oum Drou',
+    'sidi abderahmane':'Sidi Abderrahmane','sidi abderrahmane':'Sidi Abderrahmane',
+    'sidi akacha':'Sidi Akkacha',
+    'beni rachid':'Beni Rached',
+    'beniairia':'Benairia',
+    'el karimia':'El Karimia',
+    'tadjna':'Tadjena',
+    'talassa':'Talassa',
+    'herenfa':'Herenfa',
+    'labiod medjadja':'Labiod Medjadja',
+    'moussadek':'Moussadek',
+    'oued goussine':'Oued Goussine',
+    'oued sly':'Oued Sly',
+    'ouled abbes':'Ouled Abbes',
+    'ouled ben abdelkader':'Ouled Ben Abdelkader',
+    'bouzeghaia':'Bouzghaia','bouzghaia':'Bouzghaia',
+    'ain merane':'Ain Merane',
+    'sendjas':'Sendjas',
+    'beni bouateb':'Beni Bouattab',
+    'chettia':'Chettia',
+    'dahra':'Dahra'
+  };
+  function canonicalCommune(value){
+    const raw=norm(value);
+    if(!raw) return '';
+    if(COMMUNE_CANONICAL[raw]) return COMMUNE_CANONICAL[raw];
+    const key=strip(raw);
+    return COMMUNE_FR_ALIASES[key] || '';
+  }
+
   function arabicToLatin(value){
     const raw=norm(value);
+    const canonical=COMMUNE_CANONICAL[raw]||COMMUNE_FR_ALIASES[strip(raw)]; if(canonical) return canonical;
     const direct=SPECIAL[raw]||SPECIAL[strip(raw)]; if(direct) return direct;
     const lexical={'أولاد':'Ouled','اولاد':'Ouled','بني':'Beni','عين':'Ain','وادي':'Oued','سيدي':'Sidi','برج':'Bordj','قصر':'Ksar','سوق':'Souk','أم':'Oum','ام':'Oum','بئر':'Bir','راس':'Ras','رأس':'Ras','الجزائر الوسطى':'Alger Centre','باب الزوار':'Bab Ezzouar','الرويبة':'Rouiba','الشراقة':'Cheraga','بئر خادم':'Birkhadem','بئر مراد رايس':'Bir Mourad Raïs','بن عكنون':'Ben Aknoun','الأبيار':'El Biar','حيدرة':'Hydra','القبة':'Kouba','حسين داي':'Hussein Dey','برج الكيفان':'Bordj El Kiffan','برج البحري':'Bordj El Bahri','دار البيضاء':'Dar El Beida','باب الوادي':'Bab El Oued','القصبة':'Casbah','وادي قريش':'Oued Koriche','بولوغين':'Bologhine','دالي إبراهيم':'Dely Ibrahim','عين البنيان':'Ain Benian','سطاوالي':'Staoueli','سيدي فرج':'Sidi Fredj','بابا حسن':'Baba Hassen','العاشور':'El Achour','الدرارية':'Draria','بئر توتة':'Bir Touta','براقي':'Baraki','الحراش':'El Harrach','وادي السمار':'Oued Smar','الرغاية':'Reghaïa','عين طاية':'Aïn Taya','المرسى':'El Marsa','زرالدة':'Zeralda','تيمياوين':'Timiaouine','الواتة':'El Ouata','القنادسة':'Kenadsa','تاغيت':'Taghit','كرزاز':'Kerzaz','بني ونيف':'Beni Ounif','لحمر':'Lahmar','مريجة':'Meridja','موغل':'Mogheul','بوكايس':'Boukais','تبلبالة':'Tabelbala','تيمودي':'Timoudi','قصابي':'Ksabi','أولاد خضير':'Ouled Khoudir','تامترت':'Tamtert','زغامرة':'Zghamra'};
     if(lexical[raw]) return lexical[raw];
@@ -27,6 +107,6 @@
   function wilayaCode(value){const n=strip(value); if(/^\d{1,2}$/.test(n)) return String(Number(n)).padStart(2,'0'); for(const [ar,code] of Object.entries(WILAYA_AR_TO_CODE)){if(strip(ar)===n)return code;} return null;}
   function wilayaFrench(value){const code=wilayaCode(value); return code?WILAYA_FR_BY_CODE[code]:String(value||'');}
   function resolveWilaya(value){const code=wilayaCode(value);return {code:code||'',ar:String(value||''),fr:code?WILAYA_FR_BY_CODE[code]:String(value||'')};}
-  function resolveCommune(value){const ar=String(value||'').trim();return {ar,fr:arabicToLatin(ar)};}
-  return {WILAYA_FR_BY_CODE,WILAYA_AR_TO_CODE,arabicToLatin,wilayaCode,wilayaFrench,resolveWilaya,resolveCommune,norm,strip};
+  function resolveCommune(value){const ar=String(value||'').trim();const fr=canonicalCommune(ar)||arabicToLatin(ar);return {ar,fr};}
+  return {WILAYA_FR_BY_CODE,WILAYA_AR_TO_CODE,arabicToLatin,canonicalCommune,wilayaCode,wilayaFrench,resolveWilaya,resolveCommune,norm,strip};
 });
