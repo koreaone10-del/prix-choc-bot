@@ -430,8 +430,10 @@ function resolveOrderLocations(order) {
     const wilayaCode = String(order?.wilayaCode || locationTools.wilayaCode(order?.wilayaAr || order?.wilayaFr || order?.wilaya || '') || '').padStart(2,'0');
     const wilayaFr = String(order?.wilayaFr || order?.wilaya || (wilayaCode && locationTools.WILAYA_FR_BY_CODE?.[wilayaCode]) || '').trim();
     const wilayaAr = String(order?.wilayaAr || '').trim();
-    const communeFr = String(order?.communeFr || order?.commune || '').trim();
+    const communeFrRaw = String(order?.communeFr || order?.commune || '').trim();
     const communeAr = String(order?.communeAr || '').trim();
+    const communeCanonical = locationTools.canonicalCommune ? locationTools.canonicalCommune(communeFrRaw) : '';
+    const communeFr = communeCanonical || communeFrRaw;
     const communeGenerated = communeAr && locationTools.arabicToLatin ? locationTools.arabicToLatin(communeAr) : '';
     return { wilayaCode, wilayaFr, wilayaAr, communeFr, communeAr, communeGenerated };
 }
