@@ -254,51 +254,151 @@ async function selectByHints(page, hints, target, extraTargets = []) {
         try { generated.push(locationTools.arabicToLatin(t)); } catch (_) {}
     }
     const allTargets = [...new Set([...targets, ...generated].filter(Boolean))];
-    const result = await page.evaluate(({ hints, targets }) => {
-        const words = hints.map(x => String(x).toLowerCase());
+
+    const result = await page.evaluate(async ({ hints, targets }) => {
         const norm = t => String(t || '').normalize('NFKC').normalize('NFD')
-            .replace(/[\u0300-\u036f]/g,'').replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'')
-            .replace(/[’'`]/g,'').replace(/[-_/.,]/g,' ').replace(/\s+/g,' ').trim().toLowerCase();
-        const visible = el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'; };
-        const scoreField = el => {
-            const attrs=[el.name,el.id,el.getAttribute('aria-label'),el.getAttribute('placeholder')].map(norm).join(' ');
-            let label=''; if(el.id){const l=document.querySelector(`label[for="${CSS.escape(el.id)}"]`);if(l)label+=norm(l.innerText)}
-            return words.reduce((n,w)=>n+((attrs+' '+label).includes(w)?1:0),0);
+            .replace(/[\u0300-\u036f]/g,'')
+            .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'')
+            .replace(/[’'`]/g,'').replace(/[-_/.,]/g,' ')
+            .replace(/\s+/g,' ').trim().toLowerCase();
+        const visible = el => {
+            const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+            return r.width > 1 && r.height > 1 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
         };
-        const selects=Array.from(document.querySelectorAll('select')).filter(visible);
-        let best=null,bestScore=0; for(const el of selects){const sc=scoreField(el);if(sc>bestScore){best=el;bestScore=sc;}}
-        if(!best||bestScore===0)return {ok:false,reason:'no-select'};
-        const wanted=targets.map(norm).filter(Boolean);
-        const options=Array.from(best.options).filter(o=>norm(o.text));
-        // Exact normalized match first.
-        let option=options.find(o=>wanted.includes(norm(o.text)));
-        // Then contains match, preferring the shortest option that contains the target.
-        if(!option){
-            const hits=options.filter(o=>wanted.some(t=>{const x=norm(o.text);return x===t||x.includes(t)||t.includes(x)}));
-            hits.sort((a,b)=>norm(a.text).length-norm(b.text).length); option=hits[0];
+        const words = hints.map(x => norm(x));
+        const wanted = targets.map(norm).filter(Boolean);
+        const isWilaya = hints.some(h => /wilaya/i.test(String(h)));
+        const codeOf = text => {
+            const m = String(text || '').trim().match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
+            return m ? String(Number(m[1])).padStart(2,'0') : '';
+        };
+        const wantedCodes = wanted.map(x => /^\d{1,2}$/.test(x) ? String(Number(x)).padStart(2,'0') : '').filter(Boolean);
+
+        function fieldScore(el) {
+            const attrs = [el.id, el.name, el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('data-testid')]
+                .map(norm).join(' ');
+            let nearby = '';
+            if (el.id) {
+                const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+                if (l) nearby += ' ' + norm(l.innerText);
+            }
+            const parent = el.closest('label,fieldset,form,div');
+            if (parent) nearby += ' ' + norm((parent.innerText || '').slice(0,250));
+            let score = 0;
+            for (const w of words) if ((attrs + ' ' + nearby).includes(w)) score += 5;
+            if (el.getAttribute('role') === 'combobox') score += 3;
+            if (el.tagName.toLowerCase() === 'select') score += 4;
+            return score;
         }
-        // For wilaya selects, numeric code is authoritative when present.
-        if(!option && hints.some(h=>/wilaya/i.test(String(h)))){
-            for(const t of targets){const m=String(t).match(/^0?(\d{1,2})$/);if(!m)continue;const code=String(Number(m[1]));option=options.find(o=>{const m2=String(o.text).trim().match(/^(\d{1,2})\s*[-–—]/);return m2&&String(Number(m2[1]))===code;});if(option)break;}
+
+        const selects = Array.from(document.querySelectorAll('select')).filter(visible);
+        let native = selects.map(el => ({el, score:fieldScore(el)})).sort((a,b)=>b.score-a.score)[0];
+        if (native && native.score > 0) {
+            const options = Array.from(native.el.options).filter(o => norm(o.text));
+            let option = null;
+            if (isWilaya && wantedCodes.length) {
+                option = options.find(o => wantedCodes.includes(codeOf(o.text)));
+            }
+            if (!option) option = options.find(o => wanted.includes(norm(o.text)));
+            if (!option) {
+                const hits = options.filter(o => wanted.some(t => { const x=norm(o.text); return x===t || x.includes(t) || t.includes(x); }));
+                hits.sort((a,b)=>norm(a.text).length-norm(b.text).length); option=hits[0];
+            }
+            if (option) {
+                native.el.value = option.value;
+                native.el.dispatchEvent(new Event('input',{bubbles:true}));
+                native.el.dispatchEvent(new Event('change',{bubbles:true}));
+                native.el.dispatchEvent(new Event('blur',{bubbles:true}));
+                return {ok:true, mode:'native-select', text:option.text};
+            }
         }
-        // Conservative fuzzy fallback for commune spellings. This handles
-        // harmless differences such as Beni/Bni, Ouled/Oulad, accents and
-        // apostrophes without blindly choosing a distant municipality.
-        if(!option && hints.some(h=>/commune/i.test(String(h)))){
-            const lev=(a,b)=>{const m=a.length,n=b.length;if(!m)return n;if(!n)return m;const row=Array(n+1);for(let j=0;j<=n;j++)row[j]=j;for(let i=1;i<=m;i++){let prev=row[0];row[0]=i;for(let j=1;j<=n;j++){const cur=row[j];row[j]=Math.min(row[j]+1,row[j-1]+1,prev+(a[i-1]===b[j-1]?0:1));prev=cur;}}return row[n];};
-            const sim=(a,b)=>{const x=norm(a),y=norm(b);if(!x||!y)return 0;const ed=1-lev(x,y)/Math.max(x.length,y.length);const ax=new Set(x.split(' ').filter(Boolean)),by=new Set(y.split(' ').filter(Boolean));let common=0;for(const z of ax)if(by.has(z))common++;const tok=common/Math.max(ax.size,by.size);return Math.max(ed,tok*0.92);};
-            let best=null,bestScore=0,second=0;
-            for(const o of options){const sc=Math.max(...wanted.map(t=>sim(t,o.text)));if(sc>bestScore){second=bestScore;bestScore=sc;best=o;}else if(sc>second)second=sc;}
-            if(best && bestScore>=0.82 && bestScore-second>=0.04) option=best;
+
+        // Sawa9ly's current checkout may render a React/custom combobox rather
+        // than a real <select>. Find the actual visible control by its label and
+        // open it like a human user.
+        const candidates = Array.from(document.querySelectorAll(
+            '[role="combobox"],input,button,[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]'
+        )).filter(visible).map(el=>({el,score:fieldScore(el)})).sort((a,b)=>b.score-a.score);
+        const control = candidates.find(x=>x.score>0)?.el;
+        if (!control) return {ok:false,reason:'location-control-not-found'};
+
+        control.scrollIntoView({block:'center',inline:'center'});
+        control.focus?.();
+        try {
+            control.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse'}));
+            control.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+            control.click();
+            control.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+            control.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'mouse'}));
+        } catch (_) { try { control.click(); } catch (_) {} }
+
+        const sleep = ms => new Promise(r=>setTimeout(r,ms));
+        await sleep(350);
+
+        function visibleOptions() {
+            return Array.from(document.querySelectorAll(
+                '[role="option"], [role="listbox"] li, [role="listbox"] button, [data-radix-collection-item], [data-value]'
+            )).filter(visible).filter(el => {
+                const t = norm(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
+                return t && t.length <= 140;
+            });
         }
-        if(!option)return {ok:false,available:options.slice(0,100).map(o=>o.text)};
-        best.value=option.value;
-        best.dispatchEvent(new Event('input',{bubbles:true}));best.dispatchEvent(new Event('change',{bubbles:true}));best.dispatchEvent(new Event('blur',{bubbles:true}));
-        return {ok:true,text:option.text};
-    }, {hints,targets:allTargets});
-    if(!result.ok && result.available) console.log(`   🔎 Select diagnostics (${hints.join(',')}): ${JSON.stringify(result.available.slice(0,60))}`);
+        function findOption() {
+            const options = visibleOptions();
+            if (isWilaya && wantedCodes.length) {
+                const byCode = options.find(o => wantedCodes.includes(codeOf(o.innerText || o.textContent || o.getAttribute('aria-label'))));
+                if (byCode) return byCode;
+            }
+            let exact = options.find(o => wanted.includes(norm(o.innerText || o.textContent || o.getAttribute('aria-label'))));
+            if (exact) return exact;
+            const hits = options.filter(o => wanted.some(t => { const x=norm(o.innerText||o.textContent||o.getAttribute('aria-label')); return x===t || x.includes(t) || t.includes(x); }));
+            hits.sort((a,b)=>norm(a.innerText||a.textContent).length-norm(b.innerText||b.textContent).length);
+            return hits[0] || null;
+        }
+
+        let option = findOption();
+        // If the custom control is searchable, type the strongest French target
+        // (or numeric wilaya code) and let the component filter its options.
+        if (!option && (control.tagName || '').toLowerCase() === 'input') {
+            const typeTarget = isWilaya && wantedCodes.length ? wantedCodes[0] : (targets.find(x=>/[A-Za-zÀ-ÿ]/.test(x)) || targets[0]);
+            try {
+                const proto = HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto,'value')?.set;
+                if (setter) setter.call(control,''); else control.value='';
+                control.dispatchEvent(new Event('input',{bubbles:true}));
+                control.dispatchEvent(new Event('change',{bubbles:true}));
+                control.focus();
+                for (const ch of String(typeTarget || '')) {
+                    control.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));
+                    if (setter) setter.call(control,(control.value||'')+ch); else control.value=(control.value||'')+ch;
+                    control.dispatchEvent(new InputEvent('input',{bubbles:true,data:ch,inputType:'insertText'}));
+                    control.dispatchEvent(new KeyboardEvent('keyup',{key:ch,bubbles:true}));
+                }
+                await sleep(500);
+                option = findOption();
+            } catch (_) {}
+        }
+        if (!option) return {ok:false,reason:'custom-options-not-found',available:visibleOptions().slice(0,80).map(o=>o.innerText||o.textContent||'')};
+        const text = option.innerText || option.textContent || option.getAttribute('aria-label') || '';
+        option.scrollIntoView({block:'center',inline:'nearest'});
+        try {
+            option.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse'}));
+            option.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+            option.click();
+            option.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+            option.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'mouse'}));
+        } catch (_) { try { option.click(); } catch (_) {} }
+        return {ok:true,mode:'custom-combobox',text:String(text).trim()};
+    }, {hints, targets:allTargets});
+
+    if (!result.ok) {
+        console.log(`   🔎 Location selector diagnostics (${hints.join(',')}): ${JSON.stringify(result)}`);
+    } else {
+        console.log(`   🧭 ${hints.join('/')} selector mode=${result.mode}, selected="${result.text}"`);
+    }
     return !!result.ok;
 }
+
 async function login(page) {
     const loginUrl = process.env.SAWA9LY_LOGIN_URL || 'https://affiliate.sawa9ly.pro/login';
     console.log('1️⃣ Opening new Sawa9ly login...');
