@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 const locationTools = require('./locations.js');
 
 const app = express();
@@ -424,9 +425,27 @@ function resolveOrderLocations(order) {
 }
 
 async function submitNewSawa9ly(order) {
+    // Render does not need Puppeteer's automatic Chrome download.
+    // We use a pinned, self-contained Chromium binary instead.
+    chromium.setGraphicsMode = false;
+    const executablePath = await chromium.executablePath();
+    const launchArgs = await puppeteer.defaultArgs({
+        args: [
+            ...chromium.args,
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote'
+        ],
+        headless: 'shell'
+    });
+    console.log(`   🖥️ Chromium executable: ${executablePath}`);
     const browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--single-process']
+        executablePath,
+        headless: 'shell',
+        args: launchArgs,
+        defaultViewport: chromium.defaultViewport
     });
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36');
@@ -542,7 +561,33 @@ app.post('/api/order', (req,res) => {
     processQueue();
 });
 
-app.get('/health', (_req,res) => res.json({ ok:true, platform:'sawa9ly-affiliate', queue:orderQueue.length }));
+app.get('/health', (_req,res) => res.json({ ok:true, platform:'sawa9ly-affiliate', queue:orderQueue.length, browserRuntime:'sparticuz-chromium' }));
+
+// Deployment smoke test: verifies that Render can extract and launch Chromium
+// before a real customer order is attempted. It never logs credentials.
+app.get('/health/browser', async (_req,res) => {
+    let browser;
+    try {
+        chromium.setGraphicsMode = false;
+        const executablePath = await chromium.executablePath();
+        const args = await puppeteer.defaultArgs({ args: chromium.args, headless: 'shell' });
+        browser = await puppeteer.launch({
+            executablePath,
+            headless: 'shell',
+            args,
+            defaultViewport: chromium.defaultViewport
+        });
+        const page = await browser.newPage();
+        const version = await browser.version();
+        await page.close();
+        return res.json({ ok:true, browser:'chromium', version, executablePath });
+    } catch (error) {
+        console.error('❌ Browser health check failed:', error.message);
+        return res.status(500).json({ ok:false, browser:'chromium', error:error.message });
+    } finally {
+        if (browser) await browser.close().catch(()=>{});
+    }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🤖 Prix-Choc bot (new Sawa9ly) listening on ${PORT}`));
