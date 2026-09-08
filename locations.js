@@ -10,7 +10,7 @@
     'أدرار':'01','الشلف':'02','الأغواط':'03','أم البواقي':'04','باتنة':'05','بجاية':'06','بسكرة':'07','بشار':'08','البليدة':'09','البويرة':'10','تمنراست':'11','تبسة':'12','تلمسان':'13','تيارت':'14','تيزي وزو':'15','الجزائر':'16','الجلفة':'17','جيجل':'18','سطيف':'19','سعيدة':'20','سكيكدة':'21','سيدي بلعباس':'22','عنابة':'23','قالمة':'24','قسنطينة':'25','المدية':'26','مستغانم':'27','المسيلة':'28','معسكر':'29','ورقلة':'30','وهران':'31','البيض':'32','إليزي':'33','برج بوعريريج':'34','بومرداس':'35','الطارف':'36','تندوف':'37','تيسمسيلت':'38','الوادي':'39','خنشلة':'40','سوق أهراس':'41','تيبازة':'42','ميلة':'43','عين الدفلى':'44','النعامة':'45','عين تموشنت':'46','غرداية':'47','غليزان':'48','تيميمون':'49','برج باجي مختار':'50','أولاد جلال':'51','بني عباس':'52','عين صالح':'53','عين قزام':'54','تقرت':'55','جانت':'56','المغير':'57','المنيعة':'58'
   };
   for(const [ar,code] of Object.entries(WILAYA_AR_TO_CODE)){ if(WILAYA_FR_BY_CODE[code]) SPECIAL[ar]=WILAYA_FR_BY_CODE[code]; }
-  SPECIAL['وادي سلي']='Oued Sly'; SPECIAL['أقبو']='Akbou'; SPECIAL['مشدالله']="M'Chedallah"; SPECIAL['ذراع الميزان']='Draâ El Mizan'; SPECIAL['ذراع بن خدة']='Draâ Ben Khedda'; SPECIAL['بوغني']='Boghni'; SPECIAL['عزازقة']='Azazga'; SPECIAL['تيقزيرت']='Tigzirt'; SPECIAL['فريحة']='Fréha'; SPECIAL['مقلع']='Mekla'; SPECIAL['معاتقة']='Maatkas'; SPECIAL['بني يني']='Beni Yenni'; SPECIAL['واقنون']='Ouaguenoun'; SPECIAL['واسيف']='Ouacif'; SPECIAL['إغيل علي']='Ighil Ali'; SPECIAL['خراطة']='Kherrata'; SPECIAL['صدوق']='Seddouk'; SPECIAL['سيدي عيش']='Sidi Aïch'; SPECIAL['أوزلاقن']='Ouzellaguen'; SPECIAL['برباشة']='Barbacha'; SPECIAL['بوخليفة']='Boukhelifa'; SPECIAL['بوحمزة']='Bouhamza'; SPECIAL['تازمالت']='Tazmalt'; SPECIAL['تامقرة']='Tamokra'; SPECIAL['تيزي نبربر']="Tizi N'Berber"; SPECIAL['ذراع القايد']='Draâ El Kaïd'; SPECIAL['لفلاي']='Leflaye'; SPECIAL['أدكار']='Adekar';
+  SPECIAL['عنابة']='Annaba'; SPECIAL['عنّابة']='Annaba'; SPECIAL['البوني']='El Bouni'; SPECIAL['الحجار']='El Hadjar'; SPECIAL['برحال']='Berrahal'; SPECIAL['سيدي عمار']='Sidi Amar'; SPECIAL['عين الباردة']='Ain El Berda'; SPECIAL['الشرفة']='Cheurfa'; SPECIAL['سرايدي']='Seraïdi'; SPECIAL['شطايبي']='Chetaïbi'; SPECIAL['تريعات']='Treat'; SPECIAL['وادي العنب']='Oued El Aneb'; SPECIAL['المقارين']='Megarine'; SPECIAL['مقارين']='Megarine'; SPECIAL['المقارين تقرت']='Megarine'; SPECIAL['وادي سلي']='Oued Sly'; SPECIAL['أقبو']='Akbou'; SPECIAL['مشدالله']="M'Chedallah"; SPECIAL['ذراع الميزان']='Draâ El Mizan'; SPECIAL['ذراع بن خدة']='Draâ Ben Khedda'; SPECIAL['بوغني']='Boghni'; SPECIAL['عزازقة']='Azazga'; SPECIAL['تيقزيرت']='Tigzirt'; SPECIAL['فريحة']='Fréha'; SPECIAL['مقلع']='Mekla'; SPECIAL['معاتقة']='Maatkas'; SPECIAL['بني يني']='Beni Yenni'; SPECIAL['واقنون']='Ouaguenoun'; SPECIAL['واسيف']='Ouacif'; SPECIAL['إغيل علي']='Ighil Ali'; SPECIAL['خراطة']='Kherrata'; SPECIAL['صدوق']='Seddouk'; SPECIAL['سيدي عيش']='Sidi Aïch'; SPECIAL['أوزلاقن']='Ouzellaguen'; SPECIAL['برباشة']='Barbacha'; SPECIAL['بوخليفة']='Boukhelifa'; SPECIAL['بوحمزة']='Bouhamza'; SPECIAL['تازمالت']='Tazmalt'; SPECIAL['تامقرة']='Tamokra'; SPECIAL['تيزي نبربر']="Tizi N'Berber"; SPECIAL['ذراع القايد']='Draâ El Kaïd'; SPECIAL['لفلاي']='Leflaye'; SPECIAL['أدكار']='Adekar';
   function norm(v){return String(v??'').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'').replace(/\s+/g,' ').trim();}
   function strip(v){return norm(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[’'`]/g,'').replace(/[.,_\-/]/g,' ').replace(/\s+/g,' ').trim();}
 
@@ -51,10 +51,7 @@
     'الظهرة':'Dahra',
     'تنس':'Ténès',
     'أبو الحسن':'Abou El Hassen',
-    'أبو الحسن':'Abou El Hassen',
-    'المقارين':'Megarine',
-    'مقارين':'Megarine',
-    'المقارين تقرت':'Megarine'
+    'أبو الحسن':'Abou El Hassen'
   };
   const COMMUNE_FR_ALIASES={
     'tns':'Ténès','tenes':'Ténès','tenès':'Ténès','tenez':'Ténès',
@@ -85,8 +82,7 @@
     'sendjas':'Sendjas',
     'beni bouateb':'Beni Bouattab',
     'chettia':'Chettia',
-    'dahra':'Dahra',
-    'megarine':'Megarine','megarin':'Megarine','magarine':'Megarine'
+    'dahra':'Dahra','megarine':'Megarine','megarin':'Megarine','magarine':'Megarine','el bouni':'El Bouni','el hadjar':'El Hadjar','berrahhal':'Berrahal','berrahall':'Berrahal','sidi amar':'Sidi Amar','ain el berda':'Ain El Berda','cheurfa':'Cheurfa','seraidi':'Seraïdi','chetaibi':'Chetaïbi','treat':'Treat','oued el aneb':'Oued El Aneb'
   };
   function canonicalCommune(value){
     const raw=norm(value);
