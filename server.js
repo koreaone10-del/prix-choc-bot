@@ -263,152 +263,87 @@ async function selectByHints(page, hints, target, extraTargets = []) {
         .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
         .map(v => String(v).trim());
     const generated = [];
-    for (const t of targets) {
-        try { generated.push(locationTools.arabicToLatin(t)); } catch (_) {}
-    }
+    for (const t of targets) { try { generated.push(locationTools.arabicToLatin(t)); } catch (_) {} }
     const allTargets = [...new Set([...targets, ...generated].filter(Boolean))];
 
     const result = await page.evaluate(async ({ hints, targets }) => {
         const norm = t => String(t || '').normalize('NFKC').normalize('NFD')
             .replace(/[\u0300-\u036f]/g,'')
             .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'')
-            .replace(/[’'`]/g,'').replace(/[-_/.,]/g,' ')
+            .replace(/[’'`]/g,'').replace(/[-_/.,()]/g,' ')
             .replace(/\s+/g,' ').trim().toLowerCase();
-        const visible = el => {
-            const r = el.getBoundingClientRect(), s = getComputedStyle(el);
-            return r.width > 1 && r.height > 1 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
-        };
-        const words = hints.map(x => norm(x));
+        const visible = el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return r.width>1&&r.height>1&&s.visibility!=='hidden'&&s.display!=='none'&&s.opacity!=='0'; };
         const wanted = targets.map(norm).filter(Boolean);
-        const isWilaya = hints.some(h => /wilaya/i.test(String(h)));
-        const codeOf = text => {
-            const m = String(text || '').trim().match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
-            return m ? String(Number(m[1])).padStart(2,'0') : '';
+        const isWilaya = hints.some(h => /wilaya|ولاية/i.test(String(h)));
+        const isCommune = hints.some(h => /commune|بلدية|مدينة|localit/i.test(String(h)));
+        const hintWords = isCommune
+            ? ['commune','communes','ville','localite','localité','municipalite','municipalité','baladiya','بلدية','البلدية','مدينة','المدينة']
+            : hints;
+        const words = hintWords.map(norm);
+        const codeOf = text => { const m=String(text||'').trim().match(/^(?:0?)(\d{1,2})\s*[-–—:]/); return m?String(Number(m[1])).padStart(2,'0'):''; };
+        const wantedCodes = wanted.map(x => /^\d{1,2}$/.test(x)?String(Number(x)).padStart(2,'0'):'').filter(Boolean);
+        const similarity = (a,b) => {
+            a=norm(a); b=norm(b); if(!a||!b) return 0; if(a===b) return 100;
+            if(a.includes(b)||b.includes(a)) return 88;
+            const A=new Set(a.split(' ').filter(Boolean)), B=new Set(b.split(' ').filter(Boolean));
+            let common=0; for(const w of A) if(B.has(w)) common++;
+            return common ? Math.round(70*common/Math.max(A.size,B.size)) : 0;
         };
-        const wantedCodes = wanted.map(x => /^\d{1,2}$/.test(x) ? String(Number(x)).padStart(2,'0') : '').filter(Boolean);
-
-        function fieldScore(el) {
-            const attrs = [el.id, el.name, el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('data-testid')]
-                .map(norm).join(' ');
-            let nearby = '';
-            if (el.id) {
-                const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-                if (l) nearby += ' ' + norm(l.innerText);
-            }
-            const parent = el.closest('label,fieldset,form,div');
-            if (parent) nearby += ' ' + norm((parent.innerText || '').slice(0,250));
-            let score = 0;
-            for (const w of words) if ((attrs + ' ' + nearby).includes(w)) score += 5;
-            if (el.getAttribute('role') === 'combobox') score += 3;
-            if (el.tagName.toLowerCase() === 'select') score += 4;
+        function fieldScore(el){
+            const attrs=[el.id,el.name,el.getAttribute('aria-label'),el.getAttribute('placeholder'),el.getAttribute('data-testid'),el.getAttribute('data-name')].map(norm).join(' ');
+            let nearby='';
+            if(el.id){const l=document.querySelector(`label[for="${CSS.escape(el.id)}"]`);if(l)nearby+=' '+norm(l.innerText);}
+            const parent=el.closest('label,fieldset,form,div'); if(parent) nearby+=' '+norm((parent.innerText||'').slice(0,300));
+            let score=0; for(const w of words) if((attrs+' '+nearby).includes(w)) score+=6;
+            if(el.getAttribute('role')==='combobox') score+=3; if(el.tagName.toLowerCase()==='select')score+=4;
             return score;
         }
+        const controls=Array.from(document.querySelectorAll('select,[role="combobox"],input,button,[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]')).filter(visible);
+        let scored=controls.map((el,index)=>({el,index,score:fieldScore(el)})).sort((a,b)=>b.score-a.score);
+        let control=scored.find(x=>x.score>0)?.el || null;
 
-        const selects = Array.from(document.querySelectorAll('select')).filter(visible);
-        let native = selects.map(el => ({el, score:fieldScore(el)})).sort((a,b)=>b.score-a.score)[0];
-        if (native && native.score > 0) {
-            const options = Array.from(native.el.options).filter(o => norm(o.text));
-            let option = null;
-            if (isWilaya && wantedCodes.length) {
-                option = options.find(o => wantedCodes.includes(codeOf(o.text)));
-            }
-            if (!option) option = options.find(o => wanted.includes(norm(o.text)));
-            if (!option) {
-                const hits = options.filter(o => wanted.some(t => { const x=norm(o.text); return x===t || x.includes(t) || t.includes(x); }));
-                hits.sort((a,b)=>norm(a.text).length-norm(b.text).length); option=hits[0];
-            }
-            if (option) {
-                native.el.value = option.value;
-                native.el.dispatchEvent(new Event('input',{bubbles:true}));
-                native.el.dispatchEvent(new Event('change',{bubbles:true}));
-                native.el.dispatchEvent(new Event('blur',{bubbles:true}));
-                return {ok:true, mode:'native-select', text:option.text};
-            }
+        // Critical fallback for Sawa9ly: some checkout versions expose the
+        // commune selector without a textual "commune" label. After Wilaya is
+        // selected, use the next visible location control rather than failing.
+        if(!control && isCommune){
+            const wilayaControl=scored.map(x=>x.el).find(el=>/wilaya|ولاية/i.test(norm(el.getAttribute('aria-label')||'')+' '+norm(el.name||'')+' '+norm(el.id||'')));
+            const wi=wilayaControl ? controls.indexOf(wilayaControl) : -1;
+            const after=wi>=0 ? controls.slice(wi+1) : controls;
+            control=after.find(el=>el.tagName.toLowerCase()==='select' || el.getAttribute('role')==='combobox' || el.matches('input,[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]')) || null;
+        }
+        if(!control) return {ok:false,reason:'location-control-not-found'};
+
+        const selects=Array.from(document.querySelectorAll('select')).filter(visible);
+        if(control.tagName.toLowerCase()==='select'){
+            const options=Array.from(control.options).filter(o=>norm(o.text));
+            let option=null;
+            if(isWilaya&&wantedCodes.length) option=options.find(o=>wantedCodes.includes(codeOf(o.text)));
+            if(!option) option=options.find(o=>wanted.some(t=>similarity(o.text,t)>=100));
+            if(!option){const ranked=options.map(o=>({o,s:Math.max(...wanted.map(t=>similarity(o.text,t)))})).filter(x=>x.s>=75).sort((a,b)=>b.s-a.s);option=ranked[0]?.o||null;}
+            if(option){control.value=option.value;control.dispatchEvent(new Event('input',{bubbles:true}));control.dispatchEvent(new Event('change',{bubbles:true}));control.dispatchEvent(new Event('blur',{bubbles:true}));return {ok:true,mode:'native-select',text:option.text};}
         }
 
-        // Sawa9ly's current checkout may render a React/custom combobox rather
-        // than a real <select>. Find the actual visible control by its label and
-        // open it like a human user.
-        const candidates = Array.from(document.querySelectorAll(
-            '[role="combobox"],input,button,[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]'
-        )).filter(visible).map(el=>({el,score:fieldScore(el)})).sort((a,b)=>b.score-a.score);
-        const control = candidates.find(x=>x.score>0)?.el;
-        if (!control) return {ok:false,reason:'location-control-not-found'};
-
-        control.scrollIntoView({block:'center',inline:'center'});
-        control.focus?.();
-        try {
-            control.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse'}));
-            control.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
-            control.click();
-            control.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
-            control.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'mouse'}));
-        } catch (_) { try { control.click(); } catch (_) {} }
-
-        const sleep = ms => new Promise(r=>setTimeout(r,ms));
-        await sleep(350);
-
-        function visibleOptions() {
-            return Array.from(document.querySelectorAll(
-                '[role="option"], [role="listbox"] li, [role="listbox"] button, [data-radix-collection-item], [data-value]'
-            )).filter(visible).filter(el => {
-                const t = norm(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
-                return t && t.length <= 140;
-            });
-        }
-        function findOption() {
-            const options = visibleOptions();
-            if (isWilaya && wantedCodes.length) {
-                const byCode = options.find(o => wantedCodes.includes(codeOf(o.innerText || o.textContent || o.getAttribute('aria-label'))));
-                if (byCode) return byCode;
-            }
-            let exact = options.find(o => wanted.includes(norm(o.innerText || o.textContent || o.getAttribute('aria-label'))));
-            if (exact) return exact;
-            const hits = options.filter(o => wanted.some(t => { const x=norm(o.innerText||o.textContent||o.getAttribute('aria-label')); return x===t || x.includes(t) || t.includes(x); }));
-            hits.sort((a,b)=>norm(a.innerText||a.textContent).length-norm(b.innerText||b.textContent).length);
-            return hits[0] || null;
-        }
-
-        let option = findOption();
-        // If the custom control is searchable, type the strongest French target
-        // (or numeric wilaya code) and let the component filter its options.
-        if (!option && (control.tagName || '').toLowerCase() === 'input') {
-            const typeTarget = isWilaya && wantedCodes.length ? wantedCodes[0] : (targets.find(x=>/[A-Za-zÀ-ÿ]/.test(x)) || targets[0]);
-            try {
-                const proto = HTMLInputElement.prototype;
-                const setter = Object.getOwnPropertyDescriptor(proto,'value')?.set;
-                if (setter) setter.call(control,''); else control.value='';
-                control.dispatchEvent(new Event('input',{bubbles:true}));
-                control.dispatchEvent(new Event('change',{bubbles:true}));
-                control.focus();
-                for (const ch of String(typeTarget || '')) {
-                    control.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));
-                    if (setter) setter.call(control,(control.value||'')+ch); else control.value=(control.value||'')+ch;
-                    control.dispatchEvent(new InputEvent('input',{bubbles:true,data:ch,inputType:'insertText'}));
-                    control.dispatchEvent(new KeyboardEvent('keyup',{key:ch,bubbles:true}));
-                }
-                await sleep(500);
-                option = findOption();
-            } catch (_) {}
-        }
-        if (!option) return {ok:false,reason:'custom-options-not-found',available:visibleOptions().slice(0,80).map(o=>o.innerText||o.textContent||'')};
-        const text = option.innerText || option.textContent || option.getAttribute('aria-label') || '';
-        option.scrollIntoView({block:'center',inline:'nearest'});
-        try {
-            option.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse'}));
-            option.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
-            option.click();
-            option.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
-            option.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'mouse'}));
-        } catch (_) { try { option.click(); } catch (_) {} }
+        control.scrollIntoView({block:'center',inline:'center'}); control.focus?.();
+        try{control.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse'}));control.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));control.click();control.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));control.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'mouse'}));}catch(_){try{control.click();}catch(_){}}
+        const sleep=ms=>new Promise(r=>setTimeout(r,ms)); await sleep(400);
+        const visibleOptions=()=>Array.from(document.querySelectorAll('[role="option"],[role="listbox"] li,[role="listbox"] button,[data-radix-collection-item],[data-value]')).filter(visible).filter(el=>{const t=norm(el.innerText||el.textContent||el.getAttribute('aria-label')||'');return t&&t.length<=140;});
+        const findOption=()=>{
+            const options=visibleOptions();
+            if(isWilaya&&wantedCodes.length){const o=options.find(x=>wantedCodes.includes(codeOf(x.innerText||x.textContent||x.getAttribute('aria-label'))));if(o)return o;}
+            const ranked=options.map(o=>({o,s:Math.max(...wanted.map(t=>similarity(o.innerText||o.textContent||o.getAttribute('aria-label'),t)))})).sort((a,b)=>b.s-a.s);
+            return ranked.find(x=>x.s>=75)?.o||null;
+        };
+        let option=findOption();
+        if(!option && control.tagName.toLowerCase()==='input'){
+            const typeTarget=isWilaya&&wantedCodes.length?wantedCodes[0]:(targets.find(x=>/[A-Za-zÀ-ÿ]/.test(x))||targets[0]);
+            try{const proto=HTMLInputElement.prototype,setter=Object.getOwnPropertyDescriptor(proto,'value')?.set;if(setter)setter.call(control,'');else control.value='';control.dispatchEvent(new Event('input',{bubbles:true}));control.focus();for(const ch of String(typeTarget||'')){control.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));if(setter)setter.call(control,(control.value||'')+ch);else control.value=(control.value||'')+ch;control.dispatchEvent(new InputEvent('input',{bubbles:true,data:ch,inputType:'insertText'}));control.dispatchEvent(new KeyboardEvent('keyup',{key:ch,bubbles:true}));}await sleep(500);option=findOption();}catch(_){}}
+        if(!option)return {ok:false,reason:'custom-options-not-found',available:visibleOptions().slice(0,80).map(o=>o.innerText||o.textContent||'')};
+        const text=option.innerText||option.textContent||option.getAttribute('aria-label')||''; option.scrollIntoView({block:'center',inline:'nearest'});
+        try{option.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse'}));option.click();option.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));option.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'mouse'}));}catch(_){try{option.click();}catch(_){}}
         return {ok:true,mode:'custom-combobox',text:String(text).trim()};
-    }, {hints, targets:allTargets});
-
-    if (!result.ok) {
-        console.log(`   🔎 Location selector diagnostics (${hints.join(',')}): ${JSON.stringify(result)}`);
-    } else {
-        console.log(`   🧭 ${hints.join('/')} selector mode=${result.mode}, selected="${result.text}"`);
-    }
+    }, {hints,targets:allTargets});
+    if(!result.ok) console.log(`   🔎 Location selector diagnostics (${hints.join(',')}): ${JSON.stringify(result)}`);
+    else console.log(`   🧭 ${hints.join('/')} selector mode=${result.mode}, selected="${result.text}"`);
     return !!result.ok;
 }
 
