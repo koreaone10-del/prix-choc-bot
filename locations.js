@@ -51,7 +51,10 @@
     'الظهرة':'Dahra',
     'تنس':'Ténès',
     'أبو الحسن':'Abou El Hassen',
-    'أبو الحسن':'Abou El Hassen'
+    'أبو الحسن':'Abou El Hassen',
+    'المقارين':'Megarine',
+    'مقارين':'Megarine',
+    'المقارين تقرت':'Megarine'
   };
   const COMMUNE_FR_ALIASES={
     'tns':'Ténès','tenes':'Ténès','tenès':'Ténès','tenez':'Ténès',
@@ -82,7 +85,8 @@
     'sendjas':'Sendjas',
     'beni bouateb':'Beni Bouattab',
     'chettia':'Chettia',
-    'dahra':'Dahra'
+    'dahra':'Dahra',
+    'megarine':'Megarine','megarin':'Megarine','magarine':'Megarine'
   };
   function canonicalCommune(value){
     const raw=norm(value);
