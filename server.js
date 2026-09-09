@@ -273,147 +273,120 @@ async function selectByHints(page, hints, target, extraTargets = []) {
     const result = await page.evaluate(async ({ hints, targets }) => {
         const norm = t => String(t || '').normalize('NFKC').normalize('NFD')
             .replace(/[\u0300-\u036f]/g,'')
-            .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'')
             .replace(/[’'`]/g,'').replace(/[-_/.,]/g,' ')
             .replace(/\s+/g,' ').trim().toLowerCase();
         const visible = el => {
             const r = el.getBoundingClientRect(), s = getComputedStyle(el);
             return r.width > 1 && r.height > 1 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
         };
-        const words = hints.map(x => norm(x));
         const wanted = targets.map(norm).filter(Boolean);
-        const isWilaya = hints.some(h => /wilaya/i.test(String(h)));
         const codeOf = text => {
             const m = String(text || '').trim().match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
             return m ? String(Number(m[1])).padStart(2,'0') : '';
         };
-        const wantedCodes = wanted.map(x => /^\d{1,2}$/.test(x) ? String(Number(x)).padStart(2,'0') : '').filter(Boolean);
+        const isWilaya = hints.some(h => /wilaya/i.test(String(h)));
 
-        function fieldScore(el) {
-            const attrs = [el.id, el.name, el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('data-testid')]
-                .map(norm).join(' ');
-            let nearby = '';
-            if (el.id) {
-                const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-                if (l) nearby += ' ' + norm(l.innerText);
-            }
-            const parent = el.closest('label,fieldset,form,div');
-            if (parent) nearby += ' ' + norm((parent.innerText || '').slice(0,250));
-            let score = 0;
-            for (const w of words) if ((attrs + ' ' + nearby).includes(w)) score += 5;
-            if (el.getAttribute('role') === 'combobox') score += 3;
-            if (el.tagName.toLowerCase() === 'select') score += 4;
-            return score;
-        }
-
+        // 1) Native selects: identify the commune select structurally, not only by label.
         const selects = Array.from(document.querySelectorAll('select')).filter(visible);
-        let native = selects.map(el => ({el, score:fieldScore(el)})).sort((a,b)=>b.score-a.score)[0];
-        if (native && native.score > 0) {
-            const options = Array.from(native.el.options).filter(o => norm(o.text));
-            let option = null;
-            if (isWilaya && wantedCodes.length) {
-                option = options.find(o => wantedCodes.includes(codeOf(o.text)));
-            }
-            if (!option) option = options.find(o => wanted.includes(norm(o.text)));
-            if (!option) {
-                const hits = options.filter(o => wanted.some(t => { const x=norm(o.text); return x===t || x.includes(t) || t.includes(x); }));
-                hits.sort((a,b)=>norm(a.text).length-norm(b.text).length); option=hits[0];
-            }
-            if (option) {
-                native.el.value = option.value;
-                native.el.dispatchEvent(new Event('input',{bubbles:true}));
-                native.el.dispatchEvent(new Event('change',{bubbles:true}));
-                native.el.dispatchEvent(new Event('blur',{bubbles:true}));
-                return {ok:true, mode:'native-select', text:option.text};
-            }
-        }
-
-        // Sawa9ly's current checkout may render a React/custom combobox rather
-        // than a real <select>. Find the actual visible control by its label and
-        // open it like a human user.
-        const candidates = Array.from(document.querySelectorAll(
-            '[role="combobox"],input,button,[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]'
-        )).filter(visible).map(el=>({el,score:fieldScore(el)})).sort((a,b)=>b.score-a.score);
-        const control = candidates.find(x=>x.score>0)?.el;
-        if (!control) return {ok:false,reason:'location-control-not-found'};
-
-        control.scrollIntoView({block:'center',inline:'center'});
-        control.focus?.();
-        try {
-            control.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse'}));
-            control.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
-            control.click();
-            control.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
-            control.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'mouse'}));
-        } catch (_) { try { control.click(); } catch (_) {} }
-
-        const sleep = ms => new Promise(r=>setTimeout(r,ms));
-        await sleep(350);
-
-        function visibleOptions() {
-            return Array.from(document.querySelectorAll(
-                '[role="option"], [role="listbox"] li, [role="listbox"] button, [data-radix-collection-item], [data-value]'
-            )).filter(visible).filter(el => {
-                const t = norm(el.innerText || el.textContent || el.getAttribute('aria-label') || '');
-                return t && t.length <= 140;
+        const nativeCandidates = selects.map((el,index) => ({
+            el,index,
+            options: Array.from(el.options).filter(o => String(o.textContent||'').trim()).map(o => ({
+                text:String(o.textContent||'').trim(), value:String(o.value||''), disabled:o.disabled
+            }))
+        }));
+        let candidates = nativeCandidates;
+        if (!isWilaya) {
+            candidates = nativeCandidates.filter(x => {
+                const real = x.options.filter(o => !o.disabled && norm(o.text) && !/^[-–—]?$/.test(o.text));
+                const wilayaLike = real.filter(o => /^\d{1,2}\s*[-–—:]/.test(o.text)).length;
+                return real.length >= 1 && wilayaLike < Math.max(3, real.length * 0.35);
             });
         }
-        function findOption() {
-            const options = visibleOptions();
-            if (isWilaya && wantedCodes.length) {
-                const byCode = options.find(o => wantedCodes.includes(codeOf(o.innerText || o.textContent || o.getAttribute('aria-label'))));
-                if (byCode) return byCode;
-            }
-            let exact = options.find(o => wanted.includes(norm(o.innerText || o.textContent || o.getAttribute('aria-label'))));
+
+        function bestOption(options) {
+            let exact = options.find(o => wanted.includes(norm(o.text)));
             if (exact) return exact;
-            const hits = options.filter(o => wanted.some(t => { const x=norm(o.innerText||o.textContent||o.getAttribute('aria-label')); return x===t || x.includes(t) || t.includes(x); }));
-            hits.sort((a,b)=>norm(a.innerText||a.textContent).length-norm(b.innerText||b.textContent).length);
-            return hits[0] || null;
+            let best = null;
+            for (const o of options) {
+                const x = norm(o.text); if (!x) continue;
+                for (const t of wanted) {
+                    if (x === t || x.includes(t) || t.includes(x)) {
+                        const score = x === t ? 100 : 70 - Math.abs(x.length - t.length);
+                        if (!best || score > best.score) best = {option:o,score};
+                    }
+                }
+            }
+            return best?.option || null;
         }
 
-        let option = findOption();
-        // If the custom control is searchable, type the strongest French target
-        // (or numeric wilaya code) and let the component filter its options.
-        if (!option && (control.tagName || '').toLowerCase() === 'input') {
-            const typeTarget = isWilaya && wantedCodes.length ? wantedCodes[0] : (targets.find(x=>/[A-Za-zÀ-ÿ]/.test(x)) || targets[0]);
+        candidates.sort((a,b) => b.options.length - a.options.length);
+        for (const c of candidates) {
+            const opts = c.options.filter(o => !o.disabled && norm(o.text));
+            const option = bestOption(opts);
+            if (option) {
+                c.el.value = option.value;
+                c.el.dispatchEvent(new Event('input',{bubbles:true}));
+                c.el.dispatchEvent(new Event('change',{bubbles:true}));
+                c.el.dispatchEvent(new Event('blur',{bubbles:true}));
+                return {ok:true,mode:'native-structural',text:option.text,index:c.index,value:option.value};
+            }
+        }
+
+        // 2) Custom controls: first use labelled controls; if labels are missing,
+        // fall back to the visible combobox/input that is nearest a location label.
+        const controls = Array.from(document.querySelectorAll(
+            '[role="combobox"],input,button,[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]'
+        )).filter(visible);
+        const fieldText = el => {
+            const parent = el.closest('label,fieldset,form,div');
+            return norm([el.id,el.name,el.getAttribute('aria-label'),el.getAttribute('placeholder'),parent?.innerText||''].join(' '));
+        };
+        const hintWords = hints.map(norm);
+        const scored = controls.map((el,index)=>({el,index,score:hintWords.reduce((n,h)=>n+(fieldText(el).includes(h)?5:0),0)}))
+            .sort((a,b)=>b.score-a.score);
+        let control = scored.find(x=>x.score>0)?.el;
+        if (!control && !isWilaya && controls.length) {
+            // After a successful wilaya selection, commune is usually the next
+            // location control. Prefer a control below/near the wilaya control.
+            const wilayaEl = scored.find(x=>/wilaya/.test(fieldText(x.el)))?.el;
+            const wr = wilayaEl?.getBoundingClientRect();
+            const below = controls.filter(x => x !== wilayaEl).map(el=>({el,r:el.getBoundingClientRect()}))
+                .filter(x=>!wr || x.r.top >= wr.top-20)
+                .sort((a,b)=>a.r.top-b.r.top);
+            control = below[0]?.el || controls[0];
+        }
+        if (!control) return {ok:false,reason:'location-control-not-found'};
+        control.scrollIntoView({block:'center',inline:'center'}); control.focus?.();
+        try { control.click(); } catch (_) {}
+        await new Promise(r=>setTimeout(r,500));
+
+        const visibleOptions = () => Array.from(document.querySelectorAll(
+            '[role="option"],[role="listbox"] li,[role="listbox"] button,[data-radix-collection-item],[data-value]'
+        )).filter(visible).map(el=>({el,text:String(el.innerText||el.textContent||el.getAttribute('aria-label')||'').trim()})).filter(x=>x.text);
+        let opts=visibleOptions();
+        let picked=opts.find(x=>wanted.includes(norm(x.text)));
+        if(!picked) {
+            const hits=opts.map(x=>({x,score:Math.max(...wanted.map(t=>norm(x.text)===t?100:(norm(x.text).includes(t)||t.includes(norm(x.text))?70-Math.abs(norm(x.text).length-t.length):0)))})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
+            picked=hits[0]?.x;
+        }
+        if(!picked && control.tagName?.toLowerCase()==='input') {
+            const typeTarget=targets.find(x=>/[A-Za-zÀ-ÿ]/.test(x)) || targets[0];
             try {
-                const proto = HTMLInputElement.prototype;
-                const setter = Object.getOwnPropertyDescriptor(proto,'value')?.set;
-                if (setter) setter.call(control,''); else control.value='';
-                control.dispatchEvent(new Event('input',{bubbles:true}));
-                control.dispatchEvent(new Event('change',{bubbles:true}));
-                control.focus();
-                for (const ch of String(typeTarget || '')) {
-                    control.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));
-                    if (setter) setter.call(control,(control.value||'')+ch); else control.value=(control.value||'')+ch;
-                    control.dispatchEvent(new InputEvent('input',{bubbles:true,data:ch,inputType:'insertText'}));
-                    control.dispatchEvent(new KeyboardEvent('keyup',{key:ch,bubbles:true}));
-                }
-                await sleep(500);
-                option = findOption();
+                const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
+                setter?.call(control,''); control.dispatchEvent(new Event('input',{bubbles:true}));
+                for(const ch of String(typeTarget||'')) { setter?.call(control,(control.value||'')+ch); control.dispatchEvent(new InputEvent('input',{bubbles:true,data:ch,inputType:'insertText'})); }
+                await new Promise(r=>setTimeout(r,600)); opts=visibleOptions(); picked=opts.find(x=>wanted.includes(norm(x.text)));
             } catch (_) {}
         }
-        if (!option) return {ok:false,reason:'custom-options-not-found',available:visibleOptions().slice(0,80).map(o=>o.innerText||o.textContent||'')};
-        const text = option.innerText || option.textContent || option.getAttribute('aria-label') || '';
-        option.scrollIntoView({block:'center',inline:'nearest'});
-        try {
-            option.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerType:'mouse'}));
-            option.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
-            option.click();
-            option.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
-            option.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerType:'mouse'}));
-        } catch (_) { try { option.click(); } catch (_) {} }
-        return {ok:true,mode:'custom-combobox',text:String(text).trim()};
+        if(!picked) return {ok:false,reason:'custom-options-not-found',available:opts.slice(0,80).map(x=>x.text)};
+        picked.el.click();
+        return {ok:true,mode:'custom-structural',text:picked.text};
     }, {hints, targets:allTargets});
 
-    if (!result.ok) {
-        console.log(`   🔎 Location selector diagnostics (${hints.join(',')}): ${JSON.stringify(result)}`);
-    } else {
-        console.log(`   🧭 ${hints.join('/')} selector mode=${result.mode}, selected="${result.text}"`);
-    }
+    if (!result.ok) console.log(`   🔎 Location selector diagnostics (${hints.join(',')}): ${JSON.stringify(result)}`);
+    else console.log(`   🧭 ${hints.join('/')} selector mode=${result.mode}, selected="${result.text}"`);
     return !!result.ok;
 }
-
 async function login(page) {
     const loginUrl = process.env.SAWA9LY_LOGIN_URL || 'https://affiliate.sawa9ly.pro/login';
     console.log('1️⃣ Opening new Sawa9ly login...');
@@ -566,25 +539,26 @@ async function processQueue() {
     if (isProcessing || orderQueue.length === 0) return;
     isProcessing = true;
     const item = orderQueue.shift();
-    const { orderId, order } = item;
+    const orderId = item.orderId;
+    const order = item.order;
     orderStates.set(orderId, { status:'processing', updatedAt:Date.now() });
     try {
-        let lastError = null;
+        let success = false;
+        let lastError = '';
         for (let attempt = 1; attempt <= 2; attempt++) {
+            console.log(`🚀 Processing order ${orderId} (attempt ${attempt}/2)`);
             try {
-                console.log(`🚀 Processing order ${orderId} (attempt ${attempt}/2)`);
-                const ok = await submitToSawa9ly(order);
-                if (!ok) throw new Error('لم يتم تأكيد نجاح الطلب لدى Sawa9ly.');
-                orderStates.set(orderId, { status:'success', updatedAt:Date.now() });
-                lastError = null;
-                break;
+                success = await submitToSawa9ly(order);
+                if (success) break;
+                lastError = 'Sawa9ly لم يعط إشارة نجاح مؤكدة.';
             } catch (error) {
-                lastError = error;
-                console.error(`❌ محاولة ${attempt} للطلب ${orderId}:`, error.message);
-                if (attempt < 2) await delay(1500);
+                lastError = error?.message || String(error);
+                console.error(`❌ Order ${orderId} attempt ${attempt}: ${lastError}`);
             }
+            if (!success && attempt < 2) await delay(1200);
         }
-        if (lastError) orderStates.set(orderId, { status:'failed', error:lastError.message, updatedAt:Date.now() });
+        if (success) orderStates.set(orderId, { status:'success', updatedAt:Date.now() });
+        else orderStates.set(orderId, { status:'failed', error:lastError || 'فشل إرسال الطلب إلى Sawa9ly.', updatedAt:Date.now() });
     } finally {
         isProcessing = false;
         processQueue();
@@ -597,18 +571,18 @@ app.post('/api/order', (req,res) => {
     orderQueue.push({ orderId, order:req.body || {} });
     console.log(`📥 New order queued: ${orderId}. Waiting: ${orderQueue.length}`);
     processQueue();
-    res.status(202).json({ success:true, orderId, message:'تم استلام الطلب وبدأت معالجته' });
+    res.status(202).json({ success:true, orderId, status:'queued', message:'تم استلام الطلب وبدأت معالجته.' });
 });
 
 app.get('/api/order/:orderId', (req,res) => {
     const state = orderStates.get(req.params.orderId);
     if (!state) return res.status(404).json({ success:false, status:'not_found' });
-    return res.json({ success:true, orderId:req.params.orderId, ...state });
+    return res.json({ success: state.status === 'success', orderId:req.params.orderId, ...state });
 });
 
 setInterval(() => {
     const cutoff = Date.now() - 30 * 60 * 1000;
-    for (const [id,state] of orderStates) if (state.updatedAt < cutoff) orderStates.delete(id);
+    for (const [id,state] of orderStates) if ((state.updatedAt || 0) < cutoff) orderStates.delete(id);
 }, 5 * 60 * 1000);
 
 app.get('/health', (_req,res) => res.json({ ok:true, platform:'sawa9ly-affiliate', queue:orderQueue.length, processing:isProcessing, browserRuntime:'sparticuz-chromium' }));
