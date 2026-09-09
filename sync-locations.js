@@ -45,26 +45,64 @@ async function login(page) {
   console.log(`✅ Logged in: ${page.url()}`);
 }
 
+async function waitForOrderForm(page, timeout=20000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const text = await page.evaluate(() => document.body?.innerText || '').catch(() => '');
+    if (/finaliser la commande|produits sélectionnés|prix de vente|mode de livraison|informations client/i.test(text)) return true;
+    await delay(500);
+  }
+  return false;
+}
+
+async function closeCheckoutDrawer(page) {
+  // Same closing sequence proven by the live order bot: first click outside
+  // the right cart drawer, then try semantic close buttons.
+  try { await page.mouse.click(80, 420); await delay(500); } catch (_) {}
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const closed = await page.evaluate(() => {
+      const norm = t => String(t || '').normalize('NFKC')
+        .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'')
+        .replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim().toLowerCase();
+      const visible = el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'; };
+      const labels = ['fermer','close','×','✕','إغلاق'];
+      for (const el of Array.from(document.querySelectorAll('button,[role="button"],a'))) {
+        if (!visible(el)) continue;
+        const text = norm(el.innerText || el.textContent || el.getAttribute('aria-label') || el.title);
+        if (labels.includes(text)) { try { el.click(); } catch (_) {} return true; }
+      }
+      return false;
+    }).catch(() => false);
+    if (!closed) break;
+    await delay(500);
+  }
+}
+
 async function openCheckout(page) {
   const configured = process.env.SAWA9LY_LOCATION_PRODUCT_URL;
-  if (configured) {
-    await page.goto(configured, {waitUntil:'networkidle2', timeout:60000});
-  } else {
-    const id = process.env.SAWA9LY_LOCATION_PRODUCT_ID || '6252';
-    await page.goto(`https://affiliate.sawa9ly.pro/store/${id}`, {waitUntil:'networkidle2', timeout:60000});
-  }
+  const id = process.env.SAWA9LY_LOCATION_PRODUCT_ID || '6252';
+  const url = configured || `https://affiliate.sawa9ly.pro/store/${id}`;
+  await page.goto(url, {waitUntil:'networkidle2', timeout:60000});
   await delay(2500);
+  await page.waitForFunction(() => document.body && document.body.innerText && document.body.innerText.length > 100, {timeout:15000}).catch(()=>{});
 
   const clicked = await page.evaluate(() => {
     const wanted = ['commander maintenant','commander','اطلب الآن','طلب الآن','buy now'];
     const norm = t => String(t || '').normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase();
-    const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'; };
+    const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'; };
     const els = Array.from(document.querySelectorAll('button,a,[role="button"]')).filter(visible);
     const hit = els.find(el => { const t=norm(el.innerText||el.textContent||el.getAttribute('aria-label')); return wanted.some(w=>t===w||t.includes(w)); });
     if (!hit) return false;
-    hit.click(); return true;
+    hit.scrollIntoView({block:'center'});
+    hit.click();
+    return true;
   });
   if (!clicked) throw new Error('لم أجد زر Commander maintenant في منتج المزامنة.');
+
+  await delay(1000);
+  const formVisible = await waitForOrderForm(page, 20000);
+  if (!formVisible) throw new Error('نموذج Checkout لم يظهر بعد الضغط على Commander maintenant.');
+  await closeCheckoutDrawer(page);
   await delay(1200);
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await delay(500);
@@ -84,6 +122,20 @@ async function inspectControls(page) {
 function codeOf(text) {
   const m = String(text || '').trim().match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
   return m ? String(Number(m[1])).padStart(2,'0') : '';
+}
+
+async function waitForWilayaOptions(page, timeoutMs=20000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const controls = await inspectControls(page);
+    const candidates = controls.filter(c => {
+      const usable = c.options.filter(o => !o.disabled && clean(o.text));
+      return usable.length >= 40 || usable.some(o => codeOf(o.text) === '01' || codeOf(o.text) === '58');
+    });
+    if (candidates.length) return controls;
+    await delay(500);
+  }
+  return inspectControls(page);
 }
 
 async function selectWilayaNative(page, code, french) {
@@ -155,7 +207,7 @@ async function selectWilayaNative(page, code, french) {
 }
 
 async function extractCommuneOptions(page, excludeIndex=-1) {
-  return page.evaluate(() => {
+  return page.evaluate((excludeIndex) => {
     const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'; };
     const selects=Array.from(document.querySelectorAll('select')).filter(visible);
     const candidates=selects.map((el,index)=>({el,index,options:Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim()).map(o=>({text:String(o.textContent||'').trim(),value:String(o.value||'')}))})).filter(x=>x.index!==excludeIndex&&x.options.length>=1);
@@ -213,6 +265,7 @@ async function main(){
   const args=await puppeteer.defaultArgs({args:[...chromium.args,'--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--no-zygote'],headless:'shell'});
   const browser=await puppeteer.launch({executablePath,headless:'shell',args,defaultViewport:chromium.defaultViewport});
   const page=await browser.newPage();
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36');
   await page.setViewport({width:1280,height:900});
   const db=databaseArabicCommunes();
   const result={generatedAt:new Date().toISOString(),source:'Sawa9ly Affiliate live checkout',wilayas:{},summary:{wilayas:0,communes:0,matchedArabic:0,unmatchedArabic:0}};
@@ -227,9 +280,14 @@ async function main(){
       // replace/recreate the native controls after a location change; starting
       // fresh prevents a stale select from being mistaken for the next wilaya.
       await openCheckout(page);
-      const controls=await inspectControls(page);
+      const controls=await waitForWilayaOptions(page,30000);
       console.log(`   Native selects visible: ${controls.length}`);
-      const selected=await selectWilayaNative(page,code,french);
+      let selected=await selectWilayaNative(page,code,french);
+      if(!selected.ok){
+        console.log('   ⏳ Wilaya select not ready; waiting and retrying once...');
+        await delay(5000);
+        selected=await selectWilayaNative(page,code,french);
+      }
       if(!selected.ok){
         console.log(`   ❌ ${selected.reason}`);
         result.wilayas[code]={nameFr:french,ok:false,error:selected.reason,communes:[]};
