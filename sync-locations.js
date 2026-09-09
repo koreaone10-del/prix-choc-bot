@@ -71,7 +71,7 @@ async function openCheckout(page) {
 }
 
 async function inspectControls(page) {
-  return page.evaluate(() => {
+  return page.evaluate((excludeIndex) => {
     const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'; };
     return Array.from(document.querySelectorAll('select')).filter(visible).map((el,index)=>({
       index,
@@ -88,51 +88,94 @@ function codeOf(text) {
 
 async function selectWilayaNative(page, code, french) {
   const result = await page.evaluate(({code,french}) => {
-    const norm = t => String(t||'').normalize('NFKC').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[’'`]/g,'').replace(/[-_/.,]/g,' ').replace(/\s+/g,' ').trim().toLowerCase();
-    const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'; };
+    const norm = t => String(t||'').normalize('NFKC').normalize('NFD')
+      .replace(/[\u0300-\u036f]/g,'')
+      .replace(/[’'`]/g,'')
+      .replace(/[-_/.,]/g,' ')
+      .replace(/\s+/g,' ').trim().toLowerCase();
+    const visible = el => {
+      const r=el.getBoundingClientRect(),s=getComputedStyle(el);
+      return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';
+    };
+    const code2=String(code).padStart(2,'0');
     const selects=Array.from(document.querySelectorAll('select')).filter(visible);
-    const wantedCode=String(code).padStart(2,'0');
+    const diagnostics=selects.map((el,index)=>({
+      index,id:el.id||'',name:el.name||'',aria:el.getAttribute('aria-label')||'',
+      optionCount:el.options.length,
+      options:Array.from(el.options).slice(0,80).map(o=>({text:String(o.textContent||'').trim(),value:String(o.value||''),disabled:o.disabled}))
+    }));
+
+    const codeMatches = text => {
+      const t=String(text||'').trim();
+      const m=t.match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
+      return m ? String(Number(m[1])).padStart(2,'0') : '';
+    };
+    const valueMatches = value => {
+      const v=String(value||'').trim();
+      return v===code2 || v===String(Number(code2)) ||
+        new RegExp(`(^|[^0-9])0?${Number(code2)}([^0-9]|$)`).test(v);
+    };
+
     let best=null;
     for(const el of selects){
       const opts=Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim());
-      const byCode=opts.find(o=>{const m=String(o.textContent||'').trim().match(/^(?:0?)(\d{1,2})\s*[-–—:]/);return m&&String(Number(m[1])).padStart(2,'0')===wantedCode;});
-      const byName=opts.find(o=>norm(o.textContent)===norm(french)||norm(o.textContent).includes(norm(french)));
-      if(byCode||byName){best={el,opt:byCode||byName};break;}
+      let opt=opts.find(o=>codeMatches(o.textContent)===code2);
+      if(!opt) opt=opts.find(o=>valueMatches(o.value));
+      if(!opt) opt=opts.find(o=>norm(o.textContent)===norm(french));
+      if(!opt) opt=opts.find(o=>norm(o.textContent).includes(norm(french)) || norm(french).includes(norm(o.textContent)));
+      if(opt){best={el,opt};break;}
     }
-    if(!best)return {ok:false,reason:'wilaya-native-select-not-found'};
+
+    // Sawa9ly can temporarily render the native selects without accessible labels.
+    // In that case the first select containing a large location list is the wilaya control.
+    if(!best){
+      for(const el of selects){
+        const opts=Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim());
+        if(opts.length>=40){
+          const opt=opts.find(o=>codeMatches(o.textContent)===code2)||opts.find(o=>valueMatches(o.value));
+          if(opt){best={el,opt};break;}
+        }
+      }
+    }
+
+    if(!best) return {ok:false,reason:'wilaya-native-select-not-found',diagnostics};
+    best.el.focus();
     best.el.value=best.opt.value;
     best.el.dispatchEvent(new Event('input',{bubbles:true}));
     best.el.dispatchEvent(new Event('change',{bubbles:true}));
     best.el.dispatchEvent(new Event('blur',{bubbles:true}));
-    return {ok:true,text:best.opt.textContent,value:best.opt.value};
+    return {ok:true,text:String(best.opt.textContent||'').trim(),value:String(best.opt.value||''),index:selects.indexOf(best.el),diagnostics};
   },{code,french});
-  if(!result.ok) return result;
-  await delay(1000);
+  if(!result.ok){
+    console.log(`   🔎 Wilaya diagnostics: ${JSON.stringify(result.diagnostics)}`);
+    return result;
+  }
+  await delay(1800);
   return result;
 }
 
-async function extractCommuneOptions(page) {
+async function extractCommuneOptions(page, excludeIndex=-1) {
   return page.evaluate(() => {
     const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'; };
     const selects=Array.from(document.querySelectorAll('select')).filter(visible);
-    const candidates=selects.map((el,index)=>({el,index,options:Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim()).map(o=>({text:String(o.textContent||'').trim(),value:String(o.value||'')}))})).filter(x=>x.options.length>=2);
+    const candidates=selects.map((el,index)=>({el,index,options:Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim()).map(o=>({text:String(o.textContent||'').trim(),value:String(o.value||'')}))})).filter(x=>x.index!==excludeIndex&&x.options.length>=1);
     // After a wilaya is selected, the commune select is normally the control
     // whose option set is not the 58-wilaya list. Prefer the richest non-wilaya list.
     const scored=candidates.map(x=>{const hasCodes=x.options.filter(o=>/^(?:0?)(?:[1-9]|[1-5]\d|58)\s*[-–—:]/.test(o.text)).length; return {...x,score:x.options.length*2-hasCodes*10};}).sort((a,b)=>b.score-a.score);
     const picked=scored[0];
     return picked ? {index:picked.index,options:picked.options} : {index:-1,options:[]};
-  });
+  }, excludeIndex);
 }
 
-async function waitForCommuneOptions(page, previousSignature='') {
+async function waitForCommuneOptions(page, previousSignature='', excludeIndex=-1) {
   const start=Date.now();
   while(Date.now()-start<15000){
-    const data=await extractCommuneOptions(page);
+    const data=await extractCommuneOptions(page,excludeIndex);
     const sig=data.options.map(o=>o.value+'|'+o.text).join('§');
     if(data.options.length>=2 && sig!==previousSignature) return data;
     await delay(500);
   }
-  return extractCommuneOptions(page);
+  return extractCommuneOptions(page,excludeIndex);
 }
 
 function databaseArabicCommunes() {
@@ -175,11 +218,15 @@ async function main(){
   const result={generatedAt:new Date().toISOString(),source:'Sawa9ly Affiliate live checkout',wilayas:{},summary:{wilayas:0,communes:0,matchedArabic:0,unmatchedArabic:0}};
   try{
     await login(page);
-    await openCheckout(page);
     for(let n=1;n<=58;n++){
       const code=String(n).padStart(2,'0');
       const french=locationTools.WILAYA_FR_BY_CODE?.[code] || '';
       console.log(`\n🏁 ${code} - ${french}`);
+
+      // Reload the checkout for every wilaya. Sawa9ly's React checkout can
+      // replace/recreate the native controls after a location change; starting
+      // fresh prevents a stale select from being mistaken for the next wilaya.
+      await openCheckout(page);
       const controls=await inspectControls(page);
       console.log(`   Native selects visible: ${controls.length}`);
       const selected=await selectWilayaNative(page,code,french);
@@ -189,7 +236,7 @@ async function main(){
         continue;
       }
       console.log(`   ✅ Wilaya: ${selected.text}`);
-      const extracted=await waitForCommuneOptions(page);
+      const extracted=await waitForCommuneOptions(page,'',selected.index);
       const options=extracted.options;
       console.log(`   📋 Sawa9ly communes found: ${options.length}`);
       const arList=buildArabicIndex(db,code);
