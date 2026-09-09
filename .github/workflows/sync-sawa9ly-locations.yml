@@ -1,0 +1,68 @@
+name: Sync Sawa9ly Locations
+
+on:
+  workflow_dispatch:
+    inputs:
+      product_id:
+        description: 'Sawa9ly product ID used for checkout'
+        required: false
+        default: '6252'
+  schedule:
+    - cron: '30 2 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SAWA9LY_EMAIL: ${{ secrets.SAWA9LY_EMAIL }}
+      SAWA9LY_PASSWORD: ${{ secrets.SAWA9LY_PASSWORD }}
+      SAWA9LY_LOCATION_PRODUCT_ID: ${{ github.event.inputs.product_id || '6252' }}
+      PRX_LOCATION_OUTPUT: sawa9ly-locations.json
+
+    steps:
+      - name: Checkout bot repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate credentials
+        run: |
+          test -n "$SAWA9LY_EMAIL" || (echo "Missing SAWA9LY_EMAIL secret" && exit 1)
+          test -n "$SAWA9LY_PASSWORD" || (echo "Missing SAWA9LY_PASSWORD secret" && exit 1)
+
+      - name: Extract all Sawa9ly wilayas and communes
+        run: node sync-locations.js
+
+      - name: Validate 58 wilayas
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = 'sawa9ly-locations.json';
+          if (!fs.existsSync(p)) throw new Error('sawa9ly-locations.json was not created');
+          const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+          const ok = Number(d?.summary?.wilayas || 0);
+          const communes = Number(d?.summary?.communes || 0);
+          console.log(`Wilayas: ${ok}/58`);
+          console.log(`Communes: ${communes}`);
+          if (ok !== 58) process.exit(1);
+          if (communes < 1000) process.exit(1);
+          NODE
+
+      - name: Upload extracted locations
+        uses: actions/upload-artifact@v4
+        with:
+          name: sawa9ly-locations-${{ github.run_number }}
+          path: sawa9ly-locations.json
+          if-no-files-found: error
+          retention-days: 30
