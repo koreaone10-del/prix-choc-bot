@@ -28,6 +28,8 @@ function cleanText(value) {
 }
 const orderQueue = [];
 let isProcessing = false;
+const orderStates = new Map();
+let nextOrderNumber = 1;
 
 function getProductId(value) {
     const match = String(value || '').match(/\/(?:product|store)\/(\d+)/i);
@@ -332,25 +334,7 @@ async function selectByHints(page, hints, target, extraTargets = []) {
         const candidates = Array.from(document.querySelectorAll(
             '[role="combobox"],input,button,[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]'
         )).filter(visible).map(el=>({el,score:fieldScore(el)})).sort((a,b)=>b.score-a.score);
-        let control = candidates.find(x=>x.score>0)?.el;
-        if (!control && !isWilaya) {
-            // Fallback for Sawa9ly layouts where the commune field has no
-            // readable label/aria metadata. Prefer the location control that
-            // follows the already-selected wilaya in DOM order.
-            const allControls = Array.from(document.querySelectorAll(
-                'select,[role="combobox"],[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]'
-            )).filter(visible);
-            const selectedWilaya = wantedCodes.length ? wantedCodes[0] : wanted.find(Boolean) || '';
-            const wilayaIndex = allControls.findIndex(el => {
-                const selectedText = el.tagName.toLowerCase()==='select'
-                    ? (el.selectedOptions?.[0]?.textContent || '')
-                    : (el.getAttribute('aria-label') || el.textContent || '');
-                const t = norm(selectedText);
-                return (selectedWilaya && (t.includes(selectedWilaya) || codeOf(t) === selectedWilaya));
-            });
-            if (wilayaIndex >= 0 && allControls[wilayaIndex + 1]) control = allControls[wilayaIndex + 1];
-            else if (allControls.length >= 2) control = allControls[1];
-        }
+        const control = candidates.find(x=>x.score>0)?.el;
         if (!control) return {ok:false,reason:'location-control-not-found'};
 
         control.scrollIntoView({block:'center',inline:'center'});
@@ -581,21 +565,53 @@ async function submitToSawa9ly(order) {
 async function processQueue() {
     if (isProcessing || orderQueue.length === 0) return;
     isProcessing = true;
-    const order = orderQueue.shift();
-    try { await submitToSawa9ly(order); }
-    catch (error) { console.error(`❌ فشل الطلب [${order.customerName || ''}]:`, error.message); }
-    isProcessing = false;
-    processQueue();
+    const item = orderQueue.shift();
+    const { orderId, order } = item;
+    orderStates.set(orderId, { status:'processing', updatedAt:Date.now() });
+    try {
+        let lastError = null;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                console.log(`🚀 Processing order ${orderId} (attempt ${attempt}/2)`);
+                const ok = await submitToSawa9ly(order);
+                if (!ok) throw new Error('لم يتم تأكيد نجاح الطلب لدى Sawa9ly.');
+                orderStates.set(orderId, { status:'success', updatedAt:Date.now() });
+                lastError = null;
+                break;
+            } catch (error) {
+                lastError = error;
+                console.error(`❌ محاولة ${attempt} للطلب ${orderId}:`, error.message);
+                if (attempt < 2) await delay(1500);
+            }
+        }
+        if (lastError) orderStates.set(orderId, { status:'failed', error:lastError.message, updatedAt:Date.now() });
+    } finally {
+        isProcessing = false;
+        processQueue();
+    }
 }
 
 app.post('/api/order', (req,res) => {
-    res.status(200).json({ success:true, message:'تم إرسال الطلبية إلى طابور المعالجة' });
-    orderQueue.push(req.body || {});
-    console.log(`📥 New order queued. Waiting: ${orderQueue.length}`);
+    const orderId = `PX-${Date.now()}-${nextOrderNumber++}`;
+    orderStates.set(orderId, { status:'queued', updatedAt:Date.now() });
+    orderQueue.push({ orderId, order:req.body || {} });
+    console.log(`📥 New order queued: ${orderId}. Waiting: ${orderQueue.length}`);
     processQueue();
+    res.status(202).json({ success:true, orderId, message:'تم استلام الطلب وبدأت معالجته' });
 });
 
-app.get('/health', (_req,res) => res.json({ ok:true, platform:'sawa9ly-affiliate', queue:orderQueue.length, browserRuntime:'sparticuz-chromium' }));
+app.get('/api/order/:orderId', (req,res) => {
+    const state = orderStates.get(req.params.orderId);
+    if (!state) return res.status(404).json({ success:false, status:'not_found' });
+    return res.json({ success:true, orderId:req.params.orderId, ...state });
+});
+
+setInterval(() => {
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    for (const [id,state] of orderStates) if (state.updatedAt < cutoff) orderStates.delete(id);
+}, 5 * 60 * 1000);
+
+app.get('/health', (_req,res) => res.json({ ok:true, platform:'sawa9ly-affiliate', queue:orderQueue.length, processing:isProcessing, browserRuntime:'sparticuz-chromium' }));
 
 // Deployment smoke test: verifies that Render can extract and launch Chromium
 // before a real customer order is attempted. It never logs credentials.
