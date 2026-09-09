@@ -1,261 +1,179 @@
 const fs = require('fs');
 const path = require('path');
-const locationTools = require('./locations.js');
 
 let puppeteer = null;
 let chromium = null;
-
 const delay = ms => new Promise(r => setTimeout(r, ms));
-const clean = value => String(value || '')
+
+const clean = v => String(v ?? '')
   .normalize('NFKC')
   .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g, '')
   .replace(/\u00A0/g, ' ')
   .replace(/\s+/g, ' ')
   .trim();
-const norm = value => clean(value)
-  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-  .replace(/[’'`]/g, '').replace(/[-_/.,]/g, ' ')
-  .replace(/\s+/g, ' ').trim().toLowerCase();
 
-async function loadBrowserModules() {
-  if (!puppeteer) {
-    const m = await import('puppeteer-core');
-    puppeteer = m.default || m;
-  }
-  if (!chromium) {
-    const m = await import('@sparticuz/chromium');
-    chromium = m.default || m;
-  }
+const norm = v => clean(v).normalize('NFD')
+  .replace(/[\u0300-\u036f]/g,'')
+  .replace(/[’'`]/g,'')
+  .replace(/[-_/.,]/g,' ')
+  .replace(/\s+/g,' ')
+  .trim().toLowerCase();
+
+const codeOf = text => {
+  const m = clean(text).match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
+  return m ? String(Number(m[1])).padStart(2,'0') : '';
+};
+
+async function loadBrowserModules(){
+  if(!puppeteer){ const m=await import('puppeteer-core'); puppeteer=m.default||m; }
+  if(!chromium){ const m=await import('@sparticuz/chromium'); chromium=m.default||m; }
 }
 
-async function login(page) {
-  const loginUrl = process.env.SAWA9LY_LOGIN_URL || 'https://affiliate.sawa9ly.pro/login';
-  const email = process.env.SAWA9LY_EMAIL || '';
-  const password = process.env.SAWA9LY_PASSWORD || '';
-  if (!email || !password) throw new Error('SAWA9LY_EMAIL / SAWA9LY_PASSWORD غير موجودين في Environment Variables.');
-
-  await page.goto(loginUrl, {waitUntil:'domcontentloaded', timeout:60000});
-  await page.waitForSelector('input[type="email"]', {timeout:20000});
-  await page.type('input[type="email"]', email);
-  await page.type('input[type="password"]', password);
-  const submit = await page.$('button[type="submit"]');
-  if (submit) await submit.click(); else await page.keyboard.press('Enter');
+async function login(page){
+  const url=process.env.SAWA9LY_LOGIN_URL||'https://affiliate.sawa9ly.pro/login';
+  if(!process.env.SAWA9LY_EMAIL||!process.env.SAWA9LY_PASSWORD)
+    throw new Error('SAWA9LY_EMAIL / SAWA9LY_PASSWORD غير موجودين.');
+  await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000});
+  await page.waitForSelector('input[type="email"]',{timeout:20000});
+  await page.type('input[type="email"]',process.env.SAWA9LY_EMAIL);
+  await page.type('input[type="password"]',process.env.SAWA9LY_PASSWORD);
+  const submit=await page.$('button[type="submit"]');
+  if(submit) await submit.click(); else await page.keyboard.press('Enter');
   await delay(5000);
-  if (/\/login/i.test(page.url())) throw new Error('تسجيل الدخول إلى Sawa9ly لم ينجح.');
+  if(/\/login/i.test(page.url())) throw new Error('تسجيل الدخول إلى Sawa9ly لم ينجح.');
   console.log(`✅ Logged in: ${page.url()}`);
 }
 
-async function waitForOrderForm(page, timeout=20000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const text = await page.evaluate(() => document.body?.innerText || '').catch(() => '');
-    if (/finaliser la commande|produits sélectionnés|prix de vente|mode de livraison|informations client/i.test(text)) return true;
+async function waitForOrderForm(page,timeout=20000){
+  const start=Date.now();
+  while(Date.now()-start<timeout){
+    const ok=await page.evaluate(()=>/finaliser la commande|produits sélectionnés|prix de vente|mode de livraison|informations client/i.test(document.body?.innerText||'')).catch(()=>false);
+    if(ok) return true;
     await delay(500);
   }
   return false;
 }
 
-async function closeCheckoutDrawer(page) {
-  // Same closing sequence proven by the live order bot: first click outside
-  // the right cart drawer, then try semantic close buttons.
-  try { await page.mouse.click(80, 420); await delay(500); } catch (_) {}
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const closed = await page.evaluate(() => {
-      const norm = t => String(t || '').normalize('NFKC')
-        .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'')
-        .replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim().toLowerCase();
-      const visible = el => { const r=el.getBoundingClientRect(), s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'; };
-      const labels = ['fermer','close','×','✕','إغلاق'];
-      for (const el of Array.from(document.querySelectorAll('button,[role="button"],a'))) {
-        if (!visible(el)) continue;
-        const text = norm(el.innerText || el.textContent || el.getAttribute('aria-label') || el.title);
-        if (labels.includes(text)) { try { el.click(); } catch (_) {} return true; }
+async function closeDrawer(page){
+  try{ await page.mouse.click(80,420); await delay(500); }catch(_){}
+  for(let i=0;i<4;i++){
+    const changed=await page.evaluate(()=>{
+      const norm=t=>String(t||'').normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase();
+      const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'};
+      const labels=['fermer','close','×','✕','إغلاق'];
+      for(const e of document.querySelectorAll('button,[role="button"],a')){
+        if(!visible(e)) continue;
+        const t=norm(e.innerText||e.textContent||e.getAttribute('aria-label')||e.title);
+        if(labels.includes(t)){e.click();return true;}
       }
       return false;
-    }).catch(() => false);
-    if (!closed) break;
+    }).catch(()=>false);
+    if(!changed) break;
     await delay(500);
   }
 }
 
-async function openCheckout(page) {
-  const configured = process.env.SAWA9LY_LOCATION_PRODUCT_URL;
-  const id = process.env.SAWA9LY_LOCATION_PRODUCT_ID || '6252';
-  const url = configured || `https://affiliate.sawa9ly.pro/store/${id}`;
-  await page.goto(url, {waitUntil:'networkidle2', timeout:60000});
+async function openCheckout(page){
+  const id=process.env.SAWA9LY_LOCATION_PRODUCT_ID||'6252';
+  const url=process.env.SAWA9LY_LOCATION_PRODUCT_URL||`https://affiliate.sawa9ly.pro/store/${id}`;
+  await page.goto(url,{waitUntil:'networkidle2',timeout:60000});
   await delay(2500);
-  await page.waitForFunction(() => document.body && document.body.innerText && document.body.innerText.length > 100, {timeout:15000}).catch(()=>{});
-
-  const clicked = await page.evaluate(() => {
-    const wanted = ['commander maintenant','commander','اطلب الآن','طلب الآن','buy now'];
-    const norm = t => String(t || '').normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase();
-    const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'; };
-    const els = Array.from(document.querySelectorAll('button,a,[role="button"]')).filter(visible);
-    const hit = els.find(el => { const t=norm(el.innerText||el.textContent||el.getAttribute('aria-label')); return wanted.some(w=>t===w||t.includes(w)); });
-    if (!hit) return false;
-    hit.scrollIntoView({block:'center'});
-    hit.click();
-    return true;
+  const clicked=await page.evaluate(()=>{
+    const wanted=['commander maintenant','commander','اطلب الآن','طلب الآن','buy now'];
+    const norm=t=>String(t||'').normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase();
+    const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'};
+    const els=Array.from(document.querySelectorAll('button,a,[role="button"]')).filter(visible);
+    const hit=els.find(e=>{const t=norm(e.innerText||e.textContent||e.getAttribute('aria-label'));return wanted.some(w=>t===w||t.includes(w));});
+    if(!hit) return false; hit.scrollIntoView({block:'center'}); hit.click(); return true;
   });
-  if (!clicked) throw new Error('لم أجد زر Commander maintenant في منتج المزامنة.');
-
+  if(!clicked) throw new Error('لم أجد Commander maintenant.');
   await delay(1000);
-  const formVisible = await waitForOrderForm(page, 20000);
-  if (!formVisible) throw new Error('نموذج Checkout لم يظهر بعد الضغط على Commander maintenant.');
-  await closeCheckoutDrawer(page);
+  if(!(await waitForOrderForm(page,20000))) throw new Error('Checkout لم يظهر.');
+  await closeDrawer(page);
   await delay(1200);
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await delay(500);
 }
 
-async function inspectControls(page) {
-  return page.evaluate((excludeIndex) => {
-    const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'; };
+async function inspectSelects(page){
+  return page.evaluate(()=>{
+    const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'};
     return Array.from(document.querySelectorAll('select')).filter(visible).map((el,index)=>({
-      index,
-      id:el.id||'', name:el.name||'', aria:el.getAttribute('aria-label')||'',
-      options:Array.from(el.options).map(o=>({text:(o.textContent||'').trim(),value:o.value,disabled:o.disabled})).filter(o=>o.text)
+      index,id:el.id||'',name:el.name||'',aria:el.getAttribute('aria-label')||'',
+      options:Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim()).map(o=>({text:String(o.textContent||'').trim(),value:String(o.value||'')}))
     }));
   });
 }
 
-function codeOf(text) {
-  const m = String(text || '').trim().match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
-  return m ? String(Number(m[1])).padStart(2,'0') : '';
-}
-
-async function waitForWilayaOptions(page, timeoutMs=20000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const controls = await inspectControls(page);
-    const candidates = controls.filter(c => {
-      const usable = c.options.filter(o => !o.disabled && clean(o.text));
-      return usable.length >= 40 || usable.some(o => codeOf(o.text) === '01' || codeOf(o.text) === '58');
-    });
-    if (candidates.length) return controls;
+async function waitForWilayaReady(page,timeout=30000){
+  const end=Date.now()+timeout;
+  while(Date.now()<end){
+    const s=await inspectSelects(page);
+    if(s.some(x=>x.options.length>=40)) return s;
     await delay(500);
   }
-  return inspectControls(page);
+  return inspectSelects(page);
 }
 
-async function selectWilayaNative(page, code, french) {
-  const result = await page.evaluate(({code,french}) => {
-    const norm = t => String(t||'').normalize('NFKC').normalize('NFD')
-      .replace(/[\u0300-\u036f]/g,'')
-      .replace(/[’'`]/g,'')
-      .replace(/[-_/.,]/g,' ')
-      .replace(/\s+/g,' ').trim().toLowerCase();
-    const visible = el => {
-      const r=el.getBoundingClientRect(),s=getComputedStyle(el);
-      return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';
-    };
+async function selectWilaya(page,code,french){
+  const result=await page.evaluate(({code,french})=>{
+    const clean=v=>String(v||'').normalize('NFKC').replace(/\s+/g,' ').trim();
+    const norm=v=>clean(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+    const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0'};
     const code2=String(code).padStart(2,'0');
     const selects=Array.from(document.querySelectorAll('select')).filter(visible);
-    const diagnostics=selects.map((el,index)=>({
-      index,id:el.id||'',name:el.name||'',aria:el.getAttribute('aria-label')||'',
-      optionCount:el.options.length,
-      options:Array.from(el.options).slice(0,80).map(o=>({text:String(o.textContent||'').trim(),value:String(o.value||''),disabled:o.disabled}))
-    }));
-
-    const codeMatches = text => {
-      const t=String(text||'').trim();
-      const m=t.match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
-      return m ? String(Number(m[1])).padStart(2,'0') : '';
-    };
-    const valueMatches = value => {
-      const v=String(value||'').trim();
-      return v===code2 || v===String(Number(code2)) ||
-        new RegExp(`(^|[^0-9])0?${Number(code2)}([^0-9]|$)`).test(v);
-    };
-
-    let best=null;
-    for(const el of selects){
-      const opts=Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim());
-      let opt=opts.find(o=>codeMatches(o.textContent)===code2);
-      if(!opt) opt=opts.find(o=>valueMatches(o.value));
-      if(!opt) opt=opts.find(o=>norm(o.textContent)===norm(french));
-      if(!opt) opt=opts.find(o=>norm(o.textContent).includes(norm(french)) || norm(french).includes(norm(o.textContent)));
-      if(opt){best={el,opt};break;}
-    }
-
-    // Sawa9ly can temporarily render the native selects without accessible labels.
-    // In that case the first select containing a large location list is the wilaya control.
-    if(!best){
-      for(const el of selects){
-        const opts=Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim());
-        if(opts.length>=40){
-          const opt=opts.find(o=>codeMatches(o.textContent)===code2)||opts.find(o=>valueMatches(o.value));
-          if(opt){best={el,opt};break;}
-        }
-      }
-    }
-
-    if(!best) return {ok:false,reason:'wilaya-native-select-not-found',diagnostics};
-    best.el.focus();
-    best.el.value=best.opt.value;
-    best.el.dispatchEvent(new Event('input',{bubbles:true}));
-    best.el.dispatchEvent(new Event('change',{bubbles:true}));
-    best.el.dispatchEvent(new Event('blur',{bubbles:true}));
-    return {ok:true,text:String(best.opt.textContent||'').trim(),value:String(best.opt.value||''),index:selects.indexOf(best.el),diagnostics};
+    const pick=selects.find((el,i)=>i===0 && Array.from(el.options).some(o=>/^(?:0?)(\d{1,2})\s*[-–—:]/.test(clean(o.textContent)))) || selects[0];
+    if(!pick) return {ok:false,reason:'wilaya-select-missing'};
+    const opts=Array.from(pick.options).filter(o=>!o.disabled&&clean(o.textContent));
+    const codeOf=t=>{const m=clean(t).match(/^(?:0?)(\d{1,2})\s*[-–—:]/);return m?String(Number(m[1])).padStart(2,'0'):''};
+    let option=opts.find(o=>codeOf(o.textContent)===code2);
+    if(!option) option=opts.find(o=>String(o.value||'').padStart(2,'0')===code2);
+    if(!option) option=opts.find(o=>norm(o.textContent)===norm(french));
+    if(!option) return {ok:false,reason:'wilaya-option-not-found',diagnostics:selects.map((el,i)=>({i,count:el.options.length,options:Array.from(el.options).slice(0,8).map(o=>clean(o.textContent))}))};
+    pick.focus();pick.value=option.value;
+    pick.dispatchEvent(new Event('input',{bubbles:true}));
+    pick.dispatchEvent(new Event('change',{bubbles:true}));
+    pick.dispatchEvent(new Event('blur',{bubbles:true}));
+    return {ok:true,text:clean(option.textContent),value:String(option.value||''),index:selects.indexOf(pick)};
   },{code,french});
-  if(!result.ok){
-    console.log(`   🔎 Wilaya diagnostics: ${JSON.stringify(result.diagnostics)}`);
-    return result;
-  }
-  await delay(1800);
+  if(result.ok) console.log(`   🧭 Wilaya selected: ${result.text}`);
+  else console.log(`   ❌ Wilaya diagnostics: ${JSON.stringify(result)}`);
   return result;
 }
 
-async function extractCommuneOptions(page, excludeIndex=-1) {
-  return page.evaluate((excludeIndex) => {
-    const visible = el => { const r=el.getBoundingClientRect(),s=getComputedStyle(el); return r.width>1&&r.height>1&&s.display!=='none'&&s.visibility!=='hidden'; };
-    const selects=Array.from(document.querySelectorAll('select')).filter(visible);
-    const candidates=selects.map((el,index)=>({el,index,options:Array.from(el.options).filter(o=>!o.disabled&&String(o.textContent||'').trim()).map(o=>({text:String(o.textContent||'').trim(),value:String(o.value||'')}))})).filter(x=>x.index!==excludeIndex&&x.options.length>=1);
-    // After a wilaya is selected, the commune select is normally the control
-    // whose option set is not the 58-wilaya list. Prefer the richest non-wilaya list.
-    const scored=candidates.map(x=>{const hasCodes=x.options.filter(o=>/^(?:0?)(?:[1-9]|[1-5]\d|58)\s*[-–—:]/.test(o.text)).length; return {...x,score:x.options.length*2-hasCodes*10};}).sort((a,b)=>b.score-a.score);
-    const picked=scored[0];
-    return picked ? {index:picked.index,options:picked.options} : {index:-1,options:[]};
-  }, excludeIndex);
-}
-
-async function waitForCommuneOptions(page, previousSignature='', excludeIndex=-1) {
-  const start=Date.now();
-  while(Date.now()-start<15000){
-    const data=await extractCommuneOptions(page,excludeIndex);
-    const sig=data.options.map(o=>o.value+'|'+o.text).join('§');
-    if(data.options.length>=2 && sig!==previousSignature) return data;
+async function waitForCommunes(page,excludeIndex=0,timeout=25000){
+  const end=Date.now()+timeout;
+  let last=[];
+  while(Date.now()<end){
+    const s=await inspectSelects(page);
+    last=s;
+    const candidates=s.filter(x=>x.index!==excludeIndex && x.options.length>=2);
+    if(candidates.length){
+      candidates.sort((a,b)=>b.options.length-a.options.length);
+      return candidates[0];
+    }
     await delay(500);
   }
-  return extractCommuneOptions(page,excludeIndex);
+  return last.filter(x=>x.index!==excludeIndex).sort((a,b)=>b.options.length-a.options.length)[0] || {index:-1,options:[]};
 }
 
-function databaseArabicCommunes() {
-  const dbPath = process.env.PRX_DATABASE_PATH || path.resolve(__dirname,'../database.js');
+function loadArabicDatabase(){
+  const dbPath=process.env.PRX_DATABASE_PATH||path.resolve(__dirname,'../database.js');
   if(!fs.existsSync(dbPath)) return {};
-  const source=fs.readFileSync(dbPath,'utf8');
-  const data=Function(`${source}\nreturn wilayasData;`)();
-  return data || {};
+  try{
+    const source=fs.readFileSync(dbPath,'utf8');
+    return Function(`${source}\nreturn typeof wilayasData!=='undefined'?wilayasData:{};`)();
+  }catch(_){return {};}
 }
 
-function buildArabicIndex(db, code) {
-  const entry=Object.values(db).find(x=>String(x?.code||'').padStart(2,'0')===code);
-  return entry?.communes || [];
-}
-
-function bestArabicMatch(ar, options) {
-  const candidates=[ar];
-  try { candidates.push(locationTools.arabicToLatin(ar)); } catch (_) {}
-  const wanted=[...new Set(candidates.map(norm).filter(Boolean))];
-  let best=null;
-  for(const o of options){
-    const n=norm(o.text);
-    if(wanted.includes(n)) return {option:o,score:100};
-    for(const w of wanted){
-      if(n.includes(w)||w.includes(n)) best = (!best || Math.max(n.length,w.length)>best.scoreRaw) ? {option:o,score:85,scoreRaw:Math.max(n.length,w.length)} : best;
-    }
-  }
-  return best ? {option:best.option,score:best.score} : null;
+function bestArabic(ar,options){
+  const wanted=norm(ar);
+  if(!wanted) return null;
+  let hit=options.find(o=>norm(o.text)===wanted);
+  if(hit) return hit;
+  const translit=(()=>{try{return norm(require('./locations.js').arabicToLatin(ar));}catch(_){return ''}})();
+  hit=options.find(o=>translit && norm(o.text)===translit);
+  if(hit) return hit;
+  const candidates=options.filter(o=>norm(o.text).includes(wanted)||wanted.includes(norm(o.text)));
+  return candidates[0]||null;
 }
 
 async function main(){
@@ -267,55 +185,78 @@ async function main(){
   const page=await browser.newPage();
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36');
   await page.setViewport({width:1280,height:900});
-  const db=databaseArabicCommunes();
+
+  const locations=require('./locations.js');
+  const arabicDb=loadArabicDatabase();
   const result={generatedAt:new Date().toISOString(),source:'Sawa9ly Affiliate live checkout',wilayas:{},summary:{wilayas:0,communes:0,matchedArabic:0,unmatchedArabic:0}};
+
   try{
     await login(page);
     for(let n=1;n<=58;n++){
       const code=String(n).padStart(2,'0');
-      const french=locationTools.WILAYA_FR_BY_CODE?.[code] || '';
+      const french=locations.WILAYA_FR_BY_CODE?.[code]||'';
       console.log(`\n🏁 ${code} - ${french}`);
 
-      // Reload the checkout for every wilaya. Sawa9ly's React checkout can
-      // replace/recreate the native controls after a location change; starting
-      // fresh prevents a stale select from being mistaken for the next wilaya.
+      // Fresh checkout for every wilaya avoids stale React controls.
       await openCheckout(page);
-      const controls=await waitForWilayaOptions(page,30000);
+      const controls=await waitForWilayaReady(page,30000);
       console.log(`   Native selects visible: ${controls.length}`);
-      let selected=await selectWilayaNative(page,code,french);
+      console.log(`   Wilaya option counts: ${controls.map(x=>x.options.length).join(', ')}`);
+
+      let selected=await selectWilaya(page,code,french);
       if(!selected.ok){
-        console.log('   ⏳ Wilaya select not ready; waiting and retrying once...');
-        await delay(5000);
-        selected=await selectWilayaNative(page,code,french);
+        await delay(3000);
+        selected=await selectWilaya(page,code,french);
       }
       if(!selected.ok){
-        console.log(`   ❌ ${selected.reason}`);
         result.wilayas[code]={nameFr:french,ok:false,error:selected.reason,communes:[]};
         continue;
       }
-      console.log(`   ✅ Wilaya: ${selected.text}`);
-      const extracted=await waitForCommuneOptions(page,'',selected.index);
-      const options=extracted.options;
-      console.log(`   📋 Sawa9ly communes found: ${options.length}`);
-      const arList=buildArabicIndex(db,code);
-      const communes=options.map((o,index)=>({order:index+1,fr:o.text,value:o.value}));
-      const mapped=[];
+
+      await delay(1000);
+      const communeControl=await waitForCommunes(page,selected.index,25000);
+      console.log(`   📋 Sawa9ly communes found: ${communeControl.options.length}`);
+
+      const communes=communeControl.options.map((o,i)=>({
+        order:i+1,fr:o.text,value:o.value
+      }));
+
+      const arEntry=arabicDb?.[french] || arabicDb?.[locations.WILAYA_AR_TO_CODE?.[code]] || null;
+      const arList=Array.isArray(arEntry?.communes)?arEntry.communes:[];
+      const mappedArabic=[];
       const used=new Set();
+
       for(const ar of arList){
-        const match=bestArabicMatch(ar,options.filter(o=>!used.has(o.value)));
-        if(match){used.add(match.option.value);mapped.push({ar,fr:match.option.text,value:match.option.value,matchScore:match.score});result.summary.matchedArabic++;}
-        else{mapped.push({ar,fr:'',value:'',matchScore:0});result.summary.unmatchedArabic++;}
+        const m=bestArabic(ar,communes);
+        if(m && !used.has(m.value)){
+          used.add(m.value);
+          mappedArabic.push({ar,fr:m.text,value:m.value});
+          result.summary.matchedArabic++;
+        }else{
+          mappedArabic.push({ar,fr:'',value:''});
+          result.summary.unmatchedArabic++;
+        }
       }
-      result.wilayas[code]={nameFr:french,selectedText:selected.text,ok:true,communes,mappedArabic:mapped};
+
+      result.wilayas[code]={
+        nameFr:french,
+        selectedText:selected.text,
+        ok:true,
+        communes,
+        mappedArabic
+      };
       result.summary.wilayas++;
       result.summary.communes+=communes.length;
     }
-    const out=process.env.PRX_LOCATION_OUTPUT || path.resolve(__dirname,'sawa9ly-locations.json');
+
+    const out=process.env.PRX_LOCATION_OUTPUT||path.resolve(__dirname,'sawa9ly-locations.json');
     fs.writeFileSync(out,JSON.stringify(result,null,2),'utf8');
     console.log(`\n✅ Saved: ${out}`);
     console.log(JSON.stringify(result.summary));
-    if(result.summary.wilayas<58) process.exitCode=2;
-  } finally { await browser.close(); }
+    if(result.summary.wilayas!==58) process.exitCode=2;
+    if(result.summary.communes<1500) process.exitCode=2;
+  }finally{
+    await browser.close();
+  }
 }
-
-main().catch(err=>{console.error('❌ Location sync failed:',err.stack||err.message);process.exitCode=1;});
+main().catch(e=>{console.error('❌ Location sync failed:',e.stack||e.message);process.exitCode=1;});
