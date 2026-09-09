@@ -28,8 +28,6 @@ function cleanText(value) {
 }
 const orderQueue = [];
 let isProcessing = false;
-const orderStates = new Map();
-let nextOrderNumber = 1;
 
 function getProductId(value) {
     const match = String(value || '').match(/\/(?:product|store)\/(\d+)/i);
@@ -261,132 +259,166 @@ async function fillFieldByHints(page, hints, value) {
 }
 async function selectByHints(page, hints, target, extraTargets = []) {
     if (!target && (!extraTargets || !extraTargets.length)) return false;
+
     const targets = [target, ...(Array.isArray(extraTargets) ? extraTargets : [])]
         .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
         .map(v => String(v).trim());
+
     const generated = [];
     for (const t of targets) {
         try { generated.push(locationTools.arabicToLatin(t)); } catch (_) {}
     }
     const allTargets = [...new Set([...targets, ...generated].filter(Boolean))];
+    const isWilaya = hints.some(h => /wilaya/i.test(String(h)));
 
-    const result = await page.evaluate(async ({ hints, targets }) => {
-        const norm = t => String(t || '').normalize('NFKC').normalize('NFD')
-            .replace(/[\u0300-\u036f]/g,'')
-            .replace(/[’'`]/g,'').replace(/[-_/.,]/g,' ')
-            .replace(/\s+/g,' ').trim().toLowerCase();
+    // Sawa9ly's native selects are sometimes rendered immediately with only
+    // a placeholder ("Chargement..." / "Choisir..."). Never try to select
+    // until the real options have arrived.
+    const ready = await page.evaluate(async ({ isWilaya }) => {
         const visible = el => {
             const r = el.getBoundingClientRect(), s = getComputedStyle(el);
-            return r.width > 1 && r.height > 1 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
+            return r.width > 1 && r.height > 1 &&
+                s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
         };
-        const wanted = targets.map(norm).filter(Boolean);
+        const usable = el => Array.from(el.options || [])
+            .filter(o => !o.disabled && String(o.textContent || '').trim());
+
+        const deadline = Date.now() + 20000;
+        let snapshot = [];
+        while (Date.now() < deadline) {
+            const selects = Array.from(document.querySelectorAll('select')).filter(visible);
+            snapshot = selects.map((el, index) => ({
+                el, index, options: usable(el)
+            }));
+
+            if (isWilaya) {
+                if (snapshot.some(x => x.options.length >= 40)) return {ok:true};
+            } else {
+                // After a wilaya change, the commune select is the other
+                // select and must contain more than its placeholder.
+                if (snapshot.some(x => x.options.length >= 2 &&
+                    x.options.length < 40 &&
+                    !x.options.some(o => /^(?:0?)(?:1|2|3|4|5|6|7|8|9|[1-5]\d|58)\s*[-–—:]/.test(String(o.textContent||'').trim())))) {
+                    return {ok:true};
+                }
+                // A second select with >=2 options is also enough if there
+                // are exactly two selects; Sawa9ly may omit numeric prefixes.
+                if (snapshot.length >= 2 && snapshot[1].options.length >= 2) return {ok:true};
+            }
+            await new Promise(r => setTimeout(r, 400));
+        }
+        return {ok:false, snapshot:snapshot.map(x => ({
+            index:x.index, optionCount:x.options.length,
+            options:x.options.slice(0,10).map(o => ({text:String(o.textContent||'').trim(),value:String(o.value||'')}))
+        }))};
+    }, {isWilaya});
+
+    if (!ready.ok) {
+        console.log(`   ⚠️ Location select still loading after 20s: ${JSON.stringify(ready.snapshot || [])}`);
+    }
+
+    const result = await page.evaluate(({ hints, targets, isWilaya }) => {
+        const clean = t => String(t || '').normalize('NFKC')
+            .replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g,'')
+            .replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim();
+        const norm = t => clean(t).normalize('NFD')
+            .replace(/[\u0300-\u036f]/g,'').replace(/[’'`]/g,'')
+            .replace(/[-_/.,]/g,' ').replace(/\s+/g,' ').trim().toLowerCase();
+        const visible = el => {
+            const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+            return r.width > 1 && r.height > 1 &&
+                s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
+        };
         const codeOf = text => {
             const m = String(text || '').trim().match(/^(?:0?)(\d{1,2})\s*[-–—:]/);
             return m ? String(Number(m[1])).padStart(2,'0') : '';
         };
-        const isWilaya = hints.some(h => /wilaya/i.test(String(h)));
+        const wanted = targets.map(norm).filter(Boolean);
+        const wantedCodes = wanted
+            .map(x => /^\d{1,2}$/.test(x) ? String(Number(x)).padStart(2,'0') : '')
+            .filter(Boolean);
 
-        // 1) Native selects: identify the commune select structurally, not only by label.
         const selects = Array.from(document.querySelectorAll('select')).filter(visible);
-        const nativeCandidates = selects.map((el,index) => ({
+        const data = selects.map((el,index) => ({
             el,index,
-            options: Array.from(el.options).filter(o => String(o.textContent||'').trim()).map(o => ({
-                text:String(o.textContent||'').trim(), value:String(o.value||''), disabled:o.disabled
-            }))
+            options:Array.from(el.options).filter(o => !o.disabled && clean(o.textContent))
         }));
-        let candidates = nativeCandidates;
-        if (!isWilaya) {
-            candidates = nativeCandidates.filter(x => {
-                const real = x.options.filter(o => !o.disabled && norm(o.text) && !/^[-–—]?$/.test(o.text));
-                const wilayaLike = real.filter(o => /^\d{1,2}\s*[-–—:]/.test(o.text)).length;
-                return real.length >= 1 && wilayaLike < Math.max(3, real.length * 0.35);
-            });
+
+        const findOption = (options) => {
+            if (isWilaya && wantedCodes.length) {
+                const byCode = options.find(o => wantedCodes.includes(codeOf(o.textContent)));
+                if (byCode) return byCode;
+                const byValue = options.find(o => wantedCodes.includes(String(o.value||'').padStart(2,'0')));
+                if (byValue) return byValue;
+            }
+            let exact = options.find(o => wanted.includes(norm(o.textContent)));
+            if (exact) return exact;
+            const hits = options.filter(o => wanted.some(t => {
+                const x = norm(o.textContent);
+                return x === t || x.includes(t) || t.includes(x);
+            }));
+            hits.sort((a,b) => norm(a.textContent).length - norm(b.textContent).length);
+            return hits[0] || null;
+        };
+
+        let picked = null;
+        // Strong structural rule observed on Sawa9ly checkout:
+        // when two native selects are visible, first = wilaya, second = commune.
+        if (selects.length >= 2) {
+            const structural = isWilaya ? data[0] : data[1];
+            if (structural) {
+                const opt = findOption(structural.options);
+                if (opt) picked = {el:structural.el,opt,index:structural.index,mode:'native-structural'};
+            }
         }
 
-        function bestOption(options) {
-            let exact = options.find(o => wanted.includes(norm(o.text)));
-            if (exact) return exact;
-            let best = null;
-            for (const o of options) {
-                const x = norm(o.text); if (!x) continue;
-                for (const t of wanted) {
-                    if (x === t || x.includes(t) || t.includes(x)) {
-                        const score = x === t ? 100 : 70 - Math.abs(x.length - t.length);
-                        if (!best || score > best.score) best = {option:o,score};
-                    }
+        // Fallback: search all native selects.
+        if (!picked) {
+            for (const item of data) {
+                const opt = findOption(item.options);
+                if (opt) {
+                    picked = {el:item.el,opt,index:item.index,mode:'native-match'};
+                    break;
                 }
             }
-            return best?.option || null;
         }
 
-        candidates.sort((a,b) => b.options.length - a.options.length);
-        for (const c of candidates) {
-            const opts = c.options.filter(o => !o.disabled && norm(o.text));
-            const option = bestOption(opts);
-            if (option) {
-                c.el.value = option.value;
-                c.el.dispatchEvent(new Event('input',{bubbles:true}));
-                c.el.dispatchEvent(new Event('change',{bubbles:true}));
-                c.el.dispatchEvent(new Event('blur',{bubbles:true}));
-                return {ok:true,mode:'native-structural',text:option.text,index:c.index,value:option.value};
-            }
+        const diagnostics = data.map(x => ({
+            index:x.index,id:x.el.id||'',name:x.el.name||'',
+            aria:x.el.getAttribute('aria-label')||'',
+            optionCount:x.options.length,
+            options:x.options.slice(0,12).map(o => ({
+                text:clean(o.textContent),value:String(o.value||''),disabled:o.disabled
+            }))
+        }));
+
+        if (picked) {
+            picked.el.focus();
+            picked.el.value = picked.opt.value;
+            picked.el.dispatchEvent(new Event('input',{bubbles:true}));
+            picked.el.dispatchEvent(new Event('change',{bubbles:true}));
+            picked.el.dispatchEvent(new Event('blur',{bubbles:true}));
+            return {
+                ok:true, mode:picked.mode, index:picked.index,
+                text:clean(picked.opt.textContent), value:String(picked.opt.value||''),
+                diagnostics
+            };
         }
 
-        // 2) Custom controls: first use labelled controls; if labels are missing,
-        // fall back to the visible combobox/input that is nearest a location label.
-        const controls = Array.from(document.querySelectorAll(
-            '[role="combobox"],input,button,[aria-haspopup="listbox"],[aria-haspopup="true"],[data-radix-select-trigger],[data-slot="select-trigger"]'
-        )).filter(visible);
-        const fieldText = el => {
-            const parent = el.closest('label,fieldset,form,div');
-            return norm([el.id,el.name,el.getAttribute('aria-label'),el.getAttribute('placeholder'),parent?.innerText||''].join(' '));
-        };
-        const hintWords = hints.map(norm);
-        const scored = controls.map((el,index)=>({el,index,score:hintWords.reduce((n,h)=>n+(fieldText(el).includes(h)?5:0),0)}))
-            .sort((a,b)=>b.score-a.score);
-        let control = scored.find(x=>x.score>0)?.el;
-        if (!control && !isWilaya && controls.length) {
-            // After a successful wilaya selection, commune is usually the next
-            // location control. Prefer a control below/near the wilaya control.
-            const wilayaEl = scored.find(x=>/wilaya/.test(fieldText(x.el)))?.el;
-            const wr = wilayaEl?.getBoundingClientRect();
-            const below = controls.filter(x => x !== wilayaEl).map(el=>({el,r:el.getBoundingClientRect()}))
-                .filter(x=>!wr || x.r.top >= wr.top-20)
-                .sort((a,b)=>a.r.top-b.r.top);
-            control = below[0]?.el || controls[0];
-        }
-        if (!control) return {ok:false,reason:'location-control-not-found'};
-        control.scrollIntoView({block:'center',inline:'center'}); control.focus?.();
-        try { control.click(); } catch (_) {}
-        await new Promise(r=>setTimeout(r,500));
+        return {ok:false, reason:isWilaya ? 'wilaya-native-select-not-found' : 'commune-native-select-not-found', diagnostics};
+    }, {hints, targets:allTargets, isWilaya});
 
-        const visibleOptions = () => Array.from(document.querySelectorAll(
-            '[role="option"],[role="listbox"] li,[role="listbox"] button,[data-radix-collection-item],[data-value]'
-        )).filter(visible).map(el=>({el,text:String(el.innerText||el.textContent||el.getAttribute('aria-label')||'').trim()})).filter(x=>x.text);
-        let opts=visibleOptions();
-        let picked=opts.find(x=>wanted.includes(norm(x.text)));
-        if(!picked) {
-            const hits=opts.map(x=>({x,score:Math.max(...wanted.map(t=>norm(x.text)===t?100:(norm(x.text).includes(t)||t.includes(norm(x.text))?70-Math.abs(norm(x.text).length-t.length):0)))})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
-            picked=hits[0]?.x;
-        }
-        if(!picked && control.tagName?.toLowerCase()==='input') {
-            const typeTarget=targets.find(x=>/[A-Za-zÀ-ÿ]/.test(x)) || targets[0];
-            try {
-                const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
-                setter?.call(control,''); control.dispatchEvent(new Event('input',{bubbles:true}));
-                for(const ch of String(typeTarget||'')) { setter?.call(control,(control.value||'')+ch); control.dispatchEvent(new InputEvent('input',{bubbles:true,data:ch,inputType:'insertText'})); }
-                await new Promise(r=>setTimeout(r,600)); opts=visibleOptions(); picked=opts.find(x=>wanted.includes(norm(x.text)));
-            } catch (_) {}
-        }
-        if(!picked) return {ok:false,reason:'custom-options-not-found',available:opts.slice(0,80).map(x=>x.text)};
-        picked.el.click();
-        return {ok:true,mode:'custom-structural',text:picked.text};
-    }, {hints, targets:allTargets});
+    if (!result.ok) {
+        console.log(`   🔎 Location selector diagnostics (${hints.join(',')}): ${JSON.stringify(result.diagnostics)}`);
+    } else {
+        console.log(`   🧭 ${hints.join('/')} selector mode=${result.mode}, selected="${result.text}"`);
+    }
 
-    if (!result.ok) console.log(`   🔎 Location selector diagnostics (${hints.join(',')}): ${JSON.stringify(result)}`);
-    else console.log(`   🧭 ${hints.join('/')} selector mode=${result.mode}, selected="${result.text}"`);
+    // Give React time to rebuild the dependent commune select.
+    if (result.ok && isWilaya) await delay(1500);
     return !!result.ok;
 }
+
 async function login(page) {
     const loginUrl = process.env.SAWA9LY_LOGIN_URL || 'https://affiliate.sawa9ly.pro/login';
     console.log('1️⃣ Opening new Sawa9ly login...');
@@ -408,9 +440,36 @@ function resolveOrderLocations(order) {
     const communeFrRaw = String(order?.communeFr || order?.commune || '').trim();
     const communeAr = String(order?.communeAr || '').trim();
     const communeCanonical = locationTools.canonicalCommune ? locationTools.canonicalCommune(communeFrRaw) : '';
-    const communeFr = communeCanonical || communeFrRaw;
+    const exactSawa9ly = resolveSawa9lyExactCommune(wilayaCode, communeAr, communeFrRaw);
+    const communeFr = exactSawa9ly || communeCanonical || communeFrRaw;
     const communeGenerated = communeAr && locationTools.arabicToLatin ? locationTools.arabicToLatin(communeAr) : '';
     return { wilayaCode, wilayaFr, wilayaAr, communeFr, communeAr, communeGenerated };
+}
+
+function loadSawa9lyLocations() {
+    try {
+        const fs = require('fs');
+        const path = require('path');
+        const file = path.resolve(__dirname, 'sawa9ly-locations.json');
+        if (!fs.existsSync(file)) return null;
+        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+        return data && data.wilayas ? data : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function resolveSawa9lyExactCommune(wilayaCode, communeAr, communeFr) {
+    const data = loadSawa9lyLocations();
+    const entry = data?.wilayas?.[wilayaCode];
+    const list = Array.isArray(entry?.mappedArabic) ? entry.mappedArabic : [];
+    const targets = [communeAr, communeFr].filter(Boolean).map(v => locationTools.strip ? locationTools.strip(v) : cleanText(v));
+    const hit = list.find(x => {
+        const ar = locationTools.strip ? locationTools.strip(x.ar || '') : cleanText(x.ar || '');
+        const fr = locationTools.strip ? locationTools.strip(x.fr || '') : cleanText(x.fr || '');
+        return targets.some(t => t && (t === ar || t === fr || t.includes(ar) || ar.includes(t) || t.includes(fr) || fr.includes(t)));
+    });
+    return hit?.fr || '';
 }
 
 async function submitNewSawa9ly(order) {
@@ -489,6 +548,26 @@ async function submitNewSawa9ly(order) {
         console.log(`   ✅ Wilaya selected: ${locations.wilayaFr || locations.wilayaCode}`);
         await delay(900);
 
+        console.log('7️⃣ Waiting for Sawa9ly commune list...');
+        const communeReady = await page.evaluate(async () => {
+            const visible = el => {
+                const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                return r.width>1 && r.height>1 && s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0';
+            };
+            const deadline = Date.now() + 20000;
+            while (Date.now() < deadline) {
+                const selects = Array.from(document.querySelectorAll('select')).filter(visible);
+                if (selects.length >= 2) {
+                    const options = Array.from(selects[1].options || [])
+                        .filter(o => !o.disabled && String(o.textContent||'').trim());
+                    if (options.length >= 2) return {ok:true,count:options.length};
+                }
+                await new Promise(r=>setTimeout(r,400));
+            }
+            const selects = Array.from(document.querySelectorAll('select')).filter(visible);
+            return {ok:false,count:selects[1] ? selects[1].options.length : 0};
+        });
+        console.log(`   📋 Commune selector ready: ${communeReady.ok ? 'YES' : 'NO'} (${communeReady.count || 0} options)`);
         console.log('7️⃣ Selecting commune...');
         const communeOk = await selectByHints(page, ['commune'], locations.communeFr, [locations.communeGenerated, locations.communeAr]);
         if (!communeOk) throw new Error(`لم أتمكن من اختيار البلدية: ${locations.communeFr || locations.communeAr}`);
@@ -538,54 +617,21 @@ async function submitToSawa9ly(order) {
 async function processQueue() {
     if (isProcessing || orderQueue.length === 0) return;
     isProcessing = true;
-    const item = orderQueue.shift();
-    const orderId = item.orderId;
-    const order = item.order;
-    orderStates.set(orderId, { status:'processing', updatedAt:Date.now() });
-    try {
-        let success = false;
-        let lastError = '';
-        for (let attempt = 1; attempt <= 2; attempt++) {
-            console.log(`🚀 Processing order ${orderId} (attempt ${attempt}/2)`);
-            try {
-                success = await submitToSawa9ly(order);
-                if (success) break;
-                lastError = 'Sawa9ly لم يعط إشارة نجاح مؤكدة.';
-            } catch (error) {
-                lastError = error?.message || String(error);
-                console.error(`❌ Order ${orderId} attempt ${attempt}: ${lastError}`);
-            }
-            if (!success && attempt < 2) await delay(1200);
-        }
-        if (success) orderStates.set(orderId, { status:'success', updatedAt:Date.now() });
-        else orderStates.set(orderId, { status:'failed', error:lastError || 'فشل إرسال الطلب إلى Sawa9ly.', updatedAt:Date.now() });
-    } finally {
-        isProcessing = false;
-        processQueue();
-    }
+    const order = orderQueue.shift();
+    try { await submitToSawa9ly(order); }
+    catch (error) { console.error(`❌ فشل الطلب [${order.customerName || ''}]:`, error.message); }
+    isProcessing = false;
+    processQueue();
 }
 
 app.post('/api/order', (req,res) => {
-    const orderId = `PX-${Date.now()}-${nextOrderNumber++}`;
-    orderStates.set(orderId, { status:'queued', updatedAt:Date.now() });
-    orderQueue.push({ orderId, order:req.body || {} });
-    console.log(`📥 New order queued: ${orderId}. Waiting: ${orderQueue.length}`);
+    res.status(200).json({ success:true, message:'تم إرسال الطلبية إلى طابور المعالجة' });
+    orderQueue.push(req.body || {});
+    console.log(`📥 New order queued. Waiting: ${orderQueue.length}`);
     processQueue();
-    res.status(202).json({ success:true, orderId, status:'queued', message:'تم استلام الطلب وبدأت معالجته.' });
 });
 
-app.get('/api/order/:orderId', (req,res) => {
-    const state = orderStates.get(req.params.orderId);
-    if (!state) return res.status(404).json({ success:false, status:'not_found' });
-    return res.json({ success: state.status === 'success', orderId:req.params.orderId, ...state });
-});
-
-setInterval(() => {
-    const cutoff = Date.now() - 30 * 60 * 1000;
-    for (const [id,state] of orderStates) if ((state.updatedAt || 0) < cutoff) orderStates.delete(id);
-}, 5 * 60 * 1000);
-
-app.get('/health', (_req,res) => res.json({ ok:true, platform:'sawa9ly-affiliate', queue:orderQueue.length, processing:isProcessing, browserRuntime:'sparticuz-chromium' }));
+app.get('/health', (_req,res) => res.json({ ok:true, platform:'sawa9ly-affiliate', queue:orderQueue.length, browserRuntime:'sparticuz-chromium' }));
 
 // Deployment smoke test: verifies that Render can extract and launch Chromium
 // before a real customer order is attempted. It never logs credentials.
